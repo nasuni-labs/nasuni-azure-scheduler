@@ -154,13 +154,16 @@ nmc_api_call(){
     NMC_DETAILS_TXT=$1    
     parse_file_nmc_txt $NMC_DETAILS_TXT
     ### NMC API CALL  ####
-    RND=$(( $RANDOM % 1000000 ))
+    #RND=$(( $RANDOM % 1000000 ))
     #'Usage -- python3 fetch_nmc_api_23-8.py <ip_address> <username> <password> <volume_name> <rid> <web_access_appliance_address>')
-    python3 fetch_volume_data_from_nmc_api.py $NMC_API_ENDPOINT $NMC_API_USERNAME $NMC_API_PASSWORD $NMC_VOLUME_NAME $RND $WEB_ACCESS_APPLIANCE_ADDRESS
+    python3 fetch_volume_data_from_nmc_api.py $NMC_API_ENDPOINT $NMC_API_USERNAME $NMC_API_PASSWORD $NMC_VOLUME_NAME $WEB_ACCESS_APPLIANCE_ADDRESS
     ### FILTER Values From NMC API Call
     SOURCE_STORAGE_ACCOUNT_NAME=$(cat nmc_api_data_source_storage_account_name.txt)
     UNIFS_TOC_HANDLE=$(cat nmc_api_data_root_handle.txt)
     SOURCE_CONTAINER=$(cat nmc_api_data_source_container.txt)
+    #move share_data file to var/www
+    chmod 775 /var/www/SearchUI_Web/
+    sudo mv share_data.json /var/www/SearchUI_Web
     SAS_EXPIRY=`date -u -d "1440 minutes" '+%Y-%m-%dT%H:%MZ'`
     rm -rf nmc_api_*.txt
     SOURCE_STORAGE_ACCOUNT_KEY=`az storage account keys list --account-name ${SOURCE_STORAGE_ACCOUNT_NAME} | jq -r '.[0].value'`
@@ -189,20 +192,11 @@ install_NAC_CLI() {
     ### Check for BETA NAC installation
     if [ "$USE_PRIVATE_IP" = "Y" ]; then
         sudo wget https://nac.cs.nasuni.com/downloads/beta/nac-manager-1.0.7.dev8-linux-x86_64.zip
-    elif [ "$AZURE_LOCATION" == "canadacentral" ]; then
-        sudo unzip '*.zip'
-        cd nac-manager-1.0.7.dev6-linux-x86_64
-        sudo chmod 755 nac_manager
-        sudo mv nac_manager /usr/local/bin/
-        cd ..
     else
         sudo wget https://nac.cs.nasuni.com/downloads/nac-manager-1.0.6-linux-x86_64.zip
     fi
-    
-    if [ "$AZURE_LOCATION" != "canadacentral" ]; then
-        sudo unzip '*.zip'
-        sudo mv nac_manager /usr/local/bin/
-    fi
+    sudo unzip '*.zip'
+    sudo mv nac_manager /usr/local/bin/
     sudo apt update
     echo "@@@@@@@@@@@@@@@@@@@@@ FINISHED - Installing NAC CLI Package @@@@@@@@@@@@@@@@@@@@@@@"
 }
@@ -528,7 +522,7 @@ get_subnets(){
 
 ###### START - EXECUTION ######
 ### GIT_BRANCH_NAME decides the current GitHub branch from Where Code is being executed
-GIT_BRANCH_NAME="nac_v1.0.7.dev6"
+GIT_BRANCH_NAME=""
 if [[ $GIT_BRANCH_NAME == "" ]]; then
     GIT_BRANCH_NAME="main"
 fi
@@ -622,6 +616,15 @@ sudo chmod 777 $CONFIG_DAT_FILE_PATH
 CONFIG_DAT_FILE=$CONFIG_DAT_FILE_PATH/$CONFIG_DAT_FILE_NAME
 sudo rm -rf "$CONFIG_DAT_FILE"
 cp $CONFIG_DAT_FILE_NAME $CONFIG_DAT_FILE_PATH
+NAC_MANAGER_EXIST='N'
+FILE=/usr/local/bin/nac_manager
+if [ -f "$FILE" ]; then
+    echo "INFO ::: NAC Manager Already Available..."
+    NAC_MANAGER_EXIST='Y'
+else
+    echo "INFO ::: NAC Manager not Available. Installing NAC Manager CLI..."
+    install_NAC_CLI
+fi
 
 echo "INFO ::: current user :-"`whoami`
 ########## Download NAC Provisioning Code from GitHub ##########
@@ -647,19 +650,14 @@ else
     echo "ERROR ::: Unable to Proceed with NAC Provisioning."
     exit 1
 fi
+pwd
+ls -l
 # move config. dat to nasuni-azure-analyticsconnector
 cp $CONFIG_DAT_FILE_NAME $GIT_REPO_NAME
 ########################### Completed - Git Clone  ###############################################################
 cd "${GIT_REPO_NAME}"
-NAC_MANAGER_EXIST='N'
-FILE=/usr/local/bin/nac_manager
-if [ -f "$FILE" ]; then
-    echo "INFO ::: NAC Manager Already Available..."
-    NAC_MANAGER_EXIST='Y'
-else
-    echo "INFO ::: NAC Manager not Available. Installing NAC Manager CLI..."
-    install_NAC_CLI
-fi
+pwd
+ls
 ### Installing dependencies in ./ACSFunction/.python_packages/lib/site-packages location
 echo "INFO ::: NAC provisioning ::: Installing Python Dependencies."
 COMMAND="pip3 install --target=./ACSFunction/.python_packages/lib/site-packages -r ./ACSFunction/requirements.txt"
