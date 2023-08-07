@@ -9,24 +9,6 @@ START=$(date +%s)
 LOG_FILE=NAC_SCHEDULER_$DATE_WITH_TIME.log
 (
 
-get_destination_container_url(){
-	DESTINATION_CONTAINER_URL=$1
-	EDGEAPPLIANCE_RESOURCE_GROUP=$2
-	### DESTINATION_BUCKET_URL="https://destinationbktsa.blob.core.windows.net/destinationbkt" ## "From_Key_Vault"
-	DESTINATION_CONTAINER_NAME=$(echo ${DESTINATION_CONTAINER_URL} | sed 's/.*\/\([^ ]*\/[^.]*\).*/\1/' | cut -d "/" -f 2)
-	### https://destinationbktsa.blob.core.windows.net/destinationbkt From this we can get DESTINATION_STORAGE_ACCOUNT_NAME=destinationbktsa and DESTINATION_BUCKET_NAME=destinationbkt  and DESTINATION_STORAGE_ACCOUNT_CONNECTION_STRING=az storage account show-connection-string --name nmcfilersa
-	DESTINATION_STORAGE_ACCOUNT_NAME=$(echo ${DESTINATION_CONTAINER_URL} | cut -d/ -f3-|cut -d'.' -f1) #"destinationbktsa"
-	### Destination account-key: 
-	DESTINATION_ACCOUNT_KEY=`az storage account keys list --account-name ${DESTINATION_STORAGE_ACCOUNT_NAME} | jq -r '.[0].value'`
-	DESTINATION_CONTAINER_TOCKEN=`az storage account generate-sas --expiry ${SAS_EXPIRY} --permissions wdl --resource-types co --services b --account-key ${DESTINATION_ACCOUNT_KEY} --account-name ${DESTINATION_STORAGE_ACCOUNT_NAME} --https-only`
-	DESTINATION_CONTAINER_TOCKEN=$(echo "$DESTINATION_CONTAINER_TOCKEN" | tr -d \")
-	DESTINATION_CONTAINER_SAS_URL="https://$DESTINATION_STORAGE_ACCOUNT_NAME.blob.core.windows.net/?$DESTINATION_CONTAINER_TOCKEN"
-
-	DESTINATION_STORAGE_ACCOUNT_CONNECTION_STRING=`az storage account show-connection-string -g $EDGEAPPLIANCE_RESOURCE_GROUP --name ${DESTINATION_STORAGE_ACCOUNT_NAME} | jq -r '.connectionString'`
-	echo "INFO ::: SUCCESS :: Get destination container url."
-
-}
-
 check_if_VNET_exists(){
 	INPUT_VNET="$1"
 	NETWORKING_RESOURCE_GROUP="$2"
@@ -221,37 +203,6 @@ validate_kvp() {
 	fi
 } 
 
-update_destination_container_url(){
-	ACS_ADMIN_APP_CONFIG_NAME="$1"
-	ACS_RESOURCE_GROUP="$2"
-	DESTINATION_CONTAINER_NAME="$3"
-	DESTINATION_STORAGE_ACCOUNT_CONNECTION_STRING="$4"
-
-	# COMMAND SAMPLE="az appconfig kv set --endpoint https://nasuni-labs-acs-admin.azconfig.io --key test2 --value red2 --auth-mode login --yes"
-	for config_value in destination-container-name datasource-connection-string 
-	do
-		option="${config_value}" 
-		case ${option} in 
-		"destination-container-name")
-			COMMAND="az appconfig kv set --endpoint https://$ACS_ADMIN_APP_CONFIG_NAME.azconfig.io --key destination-container-name --label destination-container-name --value $DESTINATION_CONTAINER_NAME --auth-mode login --yes"
-			$COMMAND
-			;; 
-		"datasource-connection-string") 
-			COMMAND="az appconfig kv set --endpoint https://$ACS_ADMIN_APP_CONFIG_NAME.azconfig.io --key datasource-connection-string --label datasource-connection-string --value $DESTINATION_STORAGE_ACCOUNT_CONNECTION_STRING --auth-mode login --yes"
-			$COMMAND
-			;; 
-		esac 
-	done
-
-	RESULT=$?
-	if [ $RESULT -eq 0 ]; then 
-		echo "INFO ::: appconfig update SUCCESS"
-	else
-		echo "INFO ::: appconfig update FAILED"
-		exit 1
-	fi
-}
-
 get_acs_config_values(){
 	ACS_ADMIN_APP_CONFIG_NAME=$1
 	APP_CONFIG_KEY=$2
@@ -266,30 +217,12 @@ get_acs_config_values(){
 			echo "ERROR ::: Validation FAILED as, Secret $APP_CONFIG_KEY does not exists in Key Vault $ACS_ADMIN_APP_CONFIG_NAME." 
 			exit 1
 		else
-			if [ "$APP_CONFIG_KEY" == "acs-api-key" ]; then
-				ACS_API_KEY=$APP_CONFIG_VALUE
-			elif [ "$APP_CONFIG_KEY" == "acs-resource-group" ]; then
-				ACS_RESOURCE_GROUP=$APP_CONFIG_VALUE
-			elif [ "$APP_CONFIG_KEY" == "acs-service-name" ]; then
-				ACS_SERVICE_NAME=$APP_CONFIG_VALUE
-			elif [ "$APP_CONFIG_KEY" == "index-endpoint" ]; then
-				INDEX_ENDPOINT=$APP_CONFIG_VALUE
-			elif [ "$APP_CONFIG_KEY" == "nmc-api-acs-url" ]; then
-				NMC_API_ACS_URL=$APP_CONFIG_VALUE
-			elif [ "$APP_CONFIG_KEY" == "web-access-appliance-address" ]; then
-				WEB_ACCESS_APPLIANCE_ADDRESS=$APP_CONFIG_VALUE
-			elif [ "$APP_CONFIG_KEY" == "destination-container-name" ]; then
-				DESTINATION_CONTAINER_NAME=$APP_CONFIG_VALUE
-			elif [ "$APP_CONFIG_KEY" == "datasource-connection-string" ]; then
-				DATASOURCE_CONNECTION_STRING=$APP_CONFIG_VALUE
+			if [ "$APP_CONFIG_KEY" == "acs-service-name" ]; then
+				ACS_SERVICE_NAME=$APP_CONFIG_VALUE	
             fi
 			echo "INFO ::: Validation SUCCESS, as key $APP_CONFIG_KEY found in App Configuration: $ACS_ADMIN_APP_CONFIG_NAME."
 		fi
-	fi
-	if [ -z "$APP_CONFIG_VALUE" ] ; then
-        echo "ERROR ::: Validation FAILED as, Empty String Value passed to key $APP_CONFIG_KEY = $APP_CONFIG_VALUE in secret $APP_CONFIG_KEY."
-        exit 1
-	fi
+	fi	
 }
 
 validate_secret_values() {
@@ -330,8 +263,6 @@ validate_secret_values() {
 				SP_SECRET=$SECRET_VALUE
 			elif [ "$SECRET_NAME" == "github-organization" ]; then
 				GITHUB_ORGANIZATION=$SECRET_VALUE
-			elif [ "$SECRET_NAME" == "destination-container-url" ]; then
-				DESTINATION_CONTAINER_URL=$SECRET_VALUE
 			elif [ "$SECRET_NAME" == "volume-key-container-url" ]; then
 				VOLUME_KEY_BLOB_URL=$SECRET_VALUE
 			elif [ "$SECRET_NAME" == "edgeappliance-resource-group" ]; then
@@ -365,10 +296,10 @@ import_acs_app_config(){
 create_app_config_private_dns_zone_virtual_network_link(){
 	APP_CONFIG_RESOURCE_GROUP="$1"
 	APP_CONFIG_VNET_NAME="$2"
-	APP_CONFIG_PRIVAE_DNS_ZONE_NAME="privatelink.azconfig.io"
-	APP_CONFIG_PRIVATE_DNS_ZONE_VIRTUAL_NETWORK_LINK_NAME=`az network private-dns link vnet list -g $APP_CONFIG_RESOURCE_GROUP -z $APP_CONFIG_PRIVAE_DNS_ZONE_NAME | jq '.[]' | jq 'select((.virtualNetwork.id | contains('\"$APP_CONFIG_VNET_NAME\"')) and (.virtualNetwork.resourceGroup='\"$APP_CONFIG_RESOURCE_GROUP\"'))'| jq -r '.name'`
+	APP_CONFIG_PRIVATE_DNS_ZONE_NAME="privatelink.azconfig.io"
+	APP_CONFIG_PRIVATE_DNS_ZONE_VIRTUAL_NETWORK_LINK_NAME=`az network private-dns link vnet list -g $APP_CONFIG_RESOURCE_GROUP -z $APP_CONFIG_PRIVATE_DNS_ZONE_NAME | jq '.[]' | jq 'select((.virtualNetwork.id | contains('\"$APP_CONFIG_VNET_NAME\"')) and (.virtualNetwork.resourceGroup='\"$APP_CONFIG_RESOURCE_GROUP\"'))'| jq -r '.name'`
 	
-	APP_CONFIG_PRIVATE_DNS_ZONE_VIRTUAL_NETWORK_LINK_STATUS=`az network private-dns link vnet show -g $APP_CONFIG_RESOURCE_GROUP -n $APP_CONFIG_PRIVATE_DNS_ZONE_VIRTUAL_NETWORK_LINK_NAME -z $APP_CONFIG_PRIVAE_DNS_ZONE_NAME --query provisioningState --output tsv 2> /dev/null`	
+	APP_CONFIG_PRIVATE_DNS_ZONE_VIRTUAL_NETWORK_LINK_STATUS=`az network private-dns link vnet show -g $APP_CONFIG_RESOURCE_GROUP -n $APP_CONFIG_PRIVATE_DNS_ZONE_VIRTUAL_NETWORK_LINK_NAME -z $APP_CONFIG_PRIVATE_DNS_ZONE_NAME --query provisioningState --output tsv 2> /dev/null`	
 			
 		if [ "$APP_CONFIG_PRIVATE_DNS_ZONE_VIRTUAL_NETWORK_LINK_STATUS" == "Succeeded" ]; then
 			echo "INFO ::: Private DNS Zone Virtual Network Link for App Config is already exist."
@@ -379,13 +310,13 @@ create_app_config_private_dns_zone_virtual_network_link(){
 			VIRTUAL_NETWORK_ID=`az network vnet show -g $APP_CONFIG_RESOURCE_GROUP -n $APP_CONFIG_VNET_NAME --query id --output tsv 2> /dev/null`
 			LINK_NAME="nacappconfigvnetlink"
 			
-			echo "STARTED ::: $APP_CONFIG_PRIVAE_DNS_ZONE_NAME dns zone virtual link creation ::: $LINK_NAME"
+			echo "STARTED ::: $APP_CONFIG_PRIVATE_DNS_ZONE_NAME dns zone virtual link creation ::: $LINK_NAME"
 			
-			APP_CONFIG_DNS_PRIVATE_LINK=`az network private-dns link vnet create -g $APP_CONFIG_RESOURCE_GROUP -n $LINK_NAME -z $APP_CONFIG_PRIVAE_DNS_ZONE_NAME -v $VIRTUAL_NETWORK_ID -e False | jq -r '.provisioningState'`
+			APP_CONFIG_DNS_PRIVATE_LINK=`az network private-dns link vnet create -g $APP_CONFIG_RESOURCE_GROUP -n $LINK_NAME -z $APP_CONFIG_PRIVATE_DNS_ZONE_NAME -v $VIRTUAL_NETWORK_ID -e False | jq -r '.provisioningState'`
 			if [ "$APP_CONFIG_DNS_PRIVATE_LINK" == "Succeeded" ]; then
-				echo "COMPLETED ::: $APP_CONFIG_PRIVAE_DNS_ZONE_NAME dns zone virtual link successfully created ::: $LINK_NAME"
+				echo "COMPLETED ::: $APP_CONFIG_PRIVATE_DNS_ZONE_NAME dns zone virtual link successfully created ::: $LINK_NAME"
 			else
-				echo "ERROR ::: $APP_CONFIG_PRIVAE_DNS_ZONE_NAME dns zone virtual link creation failed"
+				echo "ERROR ::: $APP_CONFIG_PRIVATE_DNS_ZONE_NAME dns zone virtual link creation failed"
 				exit 1
 			fi
 		fi
@@ -394,23 +325,23 @@ create_app_config_private_dns_zone_virtual_network_link(){
 create_app_config_private_dns_zone(){
 	APP_CONFIG_PRIVAE_DNS_ZONE_RESOURCE_GROUP="$1"
 	APP_CONFIG_VNET_NAME="$2"
-	APP_CONFIG_PRIVAE_DNS_ZONE_NAME="privatelink.azconfig.io"
-	APP_CONFIG_PRIVAE_DNS_ZONE_STATUS=`az network private-dns zone show --resource-group $APP_CONFIG_PRIVAE_DNS_ZONE_RESOURCE_GROUP -n $APP_CONFIG_PRIVAE_DNS_ZONE_NAME --query provisioningState --output tsv 2> /dev/null`	
+	APP_CONFIG_PRIVATE_DNS_ZONE_NAME="privatelink.azconfig.io"
+	APP_CONFIG_PRIVAE_DNS_ZONE_STATUS=`az network private-dns zone show --resource-group $APP_CONFIG_PRIVAE_DNS_ZONE_RESOURCE_GROUP -n $APP_CONFIG_PRIVATE_DNS_ZONE_NAME --query provisioningState --output tsv 2> /dev/null`	
 
 		if [ "$APP_CONFIG_PRIVAE_DNS_ZONE_STATUS" == "Succeeded" ]; then
 			echo "INFO ::: Private DNS Zone for App Config is already exist."
 			
 		else
-			echo "INFO ::: $APP_CONFIG_PRIVAE_DNS_ZONE_NAME dns zone does not exist. It will create a new $APP_CONFIG_PRIVAE_DNS_ZONE_NAME."
+			echo "INFO ::: $APP_CONFIG_PRIVATE_DNS_ZONE_NAME dns zone does not exist. It will create a new $APP_CONFIG_PRIVATE_DNS_ZONE_NAME."
 			
-			echo "STARTED ::: $APP_CONFIG_PRIVAE_DNS_ZONE_NAME dns zone creation"
+			echo "STARTED ::: $APP_CONFIG_PRIVATE_DNS_ZONE_NAME dns zone creation"
 			
-			APP_CONFIG_DNS_ZONE=`az network private-dns zone create -g $APP_CONFIG_PRIVAE_DNS_ZONE_RESOURCE_GROUP -n $APP_CONFIG_PRIVAE_DNS_ZONE_NAME | jq -r '.provisioningState'`
+			APP_CONFIG_DNS_ZONE=`az network private-dns zone create -g $APP_CONFIG_PRIVAE_DNS_ZONE_RESOURCE_GROUP -n $APP_CONFIG_PRIVATE_DNS_ZONE_NAME | jq -r '.provisioningState'`
 			if [ "$APP_CONFIG_DNS_ZONE" == "Succeeded"  ]; then
-				echo "COMPLETED ::: $APP_CONFIG_PRIVAE_DNS_ZONE_NAME dns zone successfully created"
+				echo "COMPLETED ::: $APP_CONFIG_PRIVATE_DNS_ZONE_NAME dns zone successfully created"
 				create_app_config_private_dns_zone_virtual_network_link $APP_CONFIG_PRIVAE_DNS_ZONE_RESOURCE_GROUP $APP_CONFIG_VNET_NAME
 			else
-				echo "ERROR ::: $APP_CONFIG_PRIVAE_DNS_ZONE_NAME dns zone creation failed"
+				echo "ERROR ::: $APP_CONFIG_PRIVATE_DNS_ZONE_NAME dns zone creation failed"
 				exit 1
 			fi
 		fi
@@ -597,7 +528,7 @@ provision_Azure_Cognitive_Search(){
 		GIT_REPO_NAME=$(echo ${GIT_REPO} | sed 's/.*\/\([^ ]*\/[^.]*\).*/nasuni-\1/' | cut -d "/" -f 2)
 		echo "INFO ::: GIT_REPO $GIT_REPO"
 		echo "INFO ::: GIT_REPO_NAME $GIT_BRANCH_NAME ::: GIT_BRANCH_NAME $GIT_BRANCH_NAME"
-		rm -rf "${GIT_REPO_NAME}"
+		sudo rm -rf "${GIT_REPO_NAME}"
 		pwd
 		COMMAND="git clone -q -b $GIT_BRANCH_NAME $GIT_REPO"
 		$COMMAND
@@ -614,21 +545,19 @@ provision_Azure_Cognitive_Search(){
 		COMMAND="terraform init"
 		$COMMAND
 
-		chmod 755 $(pwd)/*
+		sudo chmod 755 $(pwd)/*
 		### Dont Change the sequence of function calls
 		echo "ACS_RESOURCE_GROUP $ACS_RESOURCE_GROUP ACS_ADMIN_APP_CONFIG_NAME $ACS_ADMIN_APP_CONFIG_NAME"
 		check_if_resourcegroup_exist $ACS_RESOURCE_GROUP $AZURE_SUBSCRIPTION_ID
 		echo "INFO ::: CognitiveSearch provisioning ::: FINISH - Executing ::: Terraform init."
 		echo "INFO ::: Create TFVARS file for provisioning Cognitive Search"
 		ACS_TFVARS_FILE_NAME="ACS.tfvars"
-		rm -rf "$ACS_TFVARS_FILE_NAME"
+		sudo rm -rf "$ACS_TFVARS_FILE_NAME"
 		echo "acs_rg_YN="\"$IS_ACS_RG_YN\" >>$ACS_TFVARS_FILE_NAME
 		echo "acs_rg_name="\"$ACS_RESOURCE_GROUP\" >>$ACS_TFVARS_FILE_NAME
 		echo "azure_location="\"$AZURE_LOCATION\" >>$ACS_TFVARS_FILE_NAME
 		echo "acs_admin_app_config_name="\"$ACS_ADMIN_APP_CONFIG_NAME\" >>$ACS_TFVARS_FILE_NAME
 		echo "acs_app_config_YN="\"$IS_ACS_ADMIN_APP_CONFIG\" >>$ACS_TFVARS_FILE_NAME
-		echo "datasource_connection_string="\"$DESTINATION_STORAGE_ACCOUNT_CONNECTION_STRING\" >>$ACS_TFVARS_FILE_NAME
-		echo "destination_container_name="\"$DESTINATION_CONTAINER_NAME\" >>$ACS_TFVARS_FILE_NAME
 		echo "sp_application_id="\"$SP_APPLICATION_ID\" >>$ACS_TFVARS_FILE_NAME
 		echo "cognitive_search_YN="\"$IS_ACS\" >>$ACS_TFVARS_FILE_NAME
 		if [[ "$USE_PRIVATE_IP" == "Y" ]]; then
@@ -688,7 +617,7 @@ provision_ACS_if_Not_Available(){
 	if [ "$IS_ACS_ADMIN_APP_CONFIG" == "Y" ]; then
 		
 		### update the Destination bucket connection string in ACS_ADMIN_APP_CONFIG_NAME
-		update_destination_container_url $ACS_ADMIN_APP_CONFIG_NAME $ACS_RESOURCE_GROUP $DESTINATION_CONTAINER_NAME $DESTINATION_STORAGE_ACCOUNT_CONNECTION_STRING
+		
 		get_acs_config_values "$ACS_ADMIN_APP_CONFIG_NAME" acs-service-name
 
 		if [ "$ACS_SERVICE_NAME" == "" ]; then
@@ -792,12 +721,12 @@ Schedule_CRON_JOB() {
 	check_if_pem_file_exists $PEM
 	ls
 	echo $PEM
-	chmod 400 $PEM
+	sudo chmod 400 $PEM
 	echo "INFO ::: Public IP Address:- $NAC_SCHEDULER_IP_ADDR"
 	echo "ssh -i "$PEM" ubuntu@$NAC_SCHEDULER_IP_ADDR -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null"
 	### Create TFVARS File for PROVISION_NAC.SH which is Used by CRON JOB - to Provision NAC Stack
 	CONFIG_DAT_FILE_NAME="config.dat"
-	rm -rf "$CONFIG_DAT_FILE_NAME"
+	sudo rm -rf "$CONFIG_DAT_FILE_NAME"
 	AZURE_CURRENT_USER=$(az ad signed-in-user show --query userPrincipalName)
 	NEW_NAC_IP=$(echo $NAC_SCHEDULER_IP_ADDR | tr '.' '-')
 	RND=$(( $RANDOM % 1000000 )); 
@@ -806,6 +735,8 @@ Schedule_CRON_JOB() {
 	SOURCE_CONTAINER=""
 	SOURCE_CONTAINER_SAS_URL=""
 	VOLUME_KEY_BLOB_SAS_URL=""
+	DESTINATION_CONTAINER_NAME=""
+	DESTINATION_CONTAINER_SAS_URL=""
     ### Generating NAC Resource group name dynamically
     NAC_RESOURCE_GROUP_NAME="nac-resource-group-$RND"
     echo "Name: "$NAC_RESOURCE_GROUP_NAME >>$CONFIG_DAT_FILE_NAME
@@ -832,23 +763,20 @@ Schedule_CRON_JOB() {
 	echo "SourceContainer: "$SOURCE_CONTAINER >>$CONFIG_DAT_FILE_NAME
 	echo "SourceContainerSASURL: "$SOURCE_CONTAINER_SAS_URL >>$CONFIG_DAT_FILE_NAME
 	echo "VolumeKeySASURL: "$VOLUME_KEY_BLOB_SAS_URL>>$CONFIG_DAT_FILE_NAME
-	echo "vnetSubscriptionId: "$AZURE_SUBSCRIPTION_ID >>$CONFIG_DAT_FILE_NAME
-	echo "vnetResourceGroup: "$NETWORKING_RESOURCE_GROUP >>$CONFIG_DAT_FILE_NAME
-	echo "vnetName: "$USER_VNET_NAME >>$CONFIG_DAT_FILE_NAME
+	if [[ "$USE_PRIVATE_IP" == "Y" ]]; then
+		echo "vnetSubscriptionId: "$AZURE_SUBSCRIPTION_ID >>$CONFIG_DAT_FILE_NAME
+		echo "vnetResourceGroup: "$NETWORKING_RESOURCE_GROUP >>$CONFIG_DAT_FILE_NAME
+		echo "vnetName: "$USER_VNET_NAME >>$CONFIG_DAT_FILE_NAME
+	fi
 
-    chmod 777 $CONFIG_DAT_FILE_NAME
+    sudo chmod 777 $CONFIG_DAT_FILE_NAME
 
 	CRON_DIR_NAME="${NMC_VOLUME_NAME}_${ANALYTICS_SERVICE}"
 	
 	NAC_TXT_FILE_NAME="NAC.txt"
-	rm -rf "$NAC_TXT_FILE_NAME"
-	# ACS_RESOURCE_GROUP=$($ACS_RESOURCE_GROUP | tr -d '"')
-	# ACS_ADMIN_APP_CONFIG_NAME=$($ACS_ADMIN_APP_CONFIG_NAME | tr -d '"')
+	sudo rm -rf "$NAC_TXT_FILE_NAME"
 	echo "acs_resource_group="$ACS_RESOURCE_GROUP >>$NAC_TXT_FILE_NAME
-	echo "azure_location="$AZURE_LOCATION >>$NAC_TXT_FILE_NAME
-    echo "acs_admin_app_config_name="$ACS_ADMIN_APP_CONFIG_NAME >>$NAC_TXT_FILE_NAME
-	echo "web_access_appliance_address="$WEB_ACCESS_APPLIANCE_ADDRESS >>$NAC_TXT_FILE_NAME
-	echo "nmc_volume_name="$NMC_VOLUME_NAME >>$NAC_TXT_FILE_NAME
+	echo "acs_admin_app_config_name="$ACS_ADMIN_APP_CONFIG_NAME >>$NAC_TXT_FILE_NAME
 	echo "github_organization="$GITHUB_ORGANIZATION >>$NAC_TXT_FILE_NAME
 	echo "user_secret="$KEY_VAULT_NAME >>$NAC_TXT_FILE_NAME
 	echo "sp_application_id="$SP_APPLICATION_ID >>$NAC_TXT_FILE_NAME
@@ -859,6 +787,8 @@ Schedule_CRON_JOB() {
 	echo "analytic_service="$ANALYTICS_SERVICE >>$NAC_TXT_FILE_NAME
 	echo "frequency="$FREQUENCY >>$NAC_TXT_FILE_NAME
 	echo "nac_scheduler_name="$NAC_SCHEDULER_NAME >>$NAC_TXT_FILE_NAME
+	echo "edge_appliance_group="$EDGEAPPLIANCE_RESOURCE_GROUP >>$NAC_TXT_FILE_NAME
+	
 	if [[ "$USE_PRIVATE_IP" == "Y" ]]; then
 		echo "use_private_ip="$USE_PRIVATE_IP >>$NAC_TXT_FILE_NAME
 		echo "user_subnet_name="$SUBNET_NAME >>$NAC_TXT_FILE_NAME	
@@ -866,7 +796,7 @@ Schedule_CRON_JOB() {
 		echo "use_private_ip="N >>$NAC_TXT_FILE_NAME
 	fi
 	
-	chmod 777 $NAC_TXT_FILE_NAME
+	sudo chmod 777 $NAC_TXT_FILE_NAME
 
 	### Create File to transfer data related to NMC 
 	NMC_DETAILS_TXT="nmc_details.txt"
@@ -879,7 +809,7 @@ Schedule_CRON_JOB() {
 	echo "nmc_volume_name="$NMC_VOLUME_NAME >>$NMC_DETAILS_TXT
 	echo "web_access_appliance_address="$WEB_ACCESS_APPLIANCE_ADDRESS >>$NMC_DETAILS_TXT
 	echo "" >>$NMC_DETAILS_TXT
-	chmod 777 $NMC_DETAILS_TXT
+	sudo chmod 777 $NMC_DETAILS_TXT
 
 	
 	NMC_DETAILS_JSON="nmc_details.json"
@@ -892,7 +822,7 @@ Schedule_CRON_JOB() {
 	echo '"nmc_volume_name":"'$NMC_VOLUME_NAME'",' >>$NMC_DETAILS_JSON
 	echo '"web_access_appliance_address":"'$WEB_ACCESS_APPLIANCE_ADDRESS'"}' >>$NMC_DETAILS_JSON
 	echo "" >>$NMC_DETAILS_JSON
-	chmod 777 $NMC_DETAILS_JSON
+	sudo chmod 777 $NMC_DETAILS_JSON
 
 	JSON_FILE_PATH="/var/www/Tracker_UI/docs/"
 	### Create Directory for each Volume
@@ -915,7 +845,7 @@ Schedule_CRON_JOB() {
 	elif [ $RES -eq 0 ]; then
 		echo "INFO ::: $TFVARS_FILE_NAME Uploaded Successfully to NAC_Scheduer Instance."
 	fi
-	rm -rf $TFVARS_FILE_NAME
+	sudo rm -rf $TFVARS_FILE_NAME
 	echo "Copying file tracker_json.py $JSON_FILE_PATH Creating Direcotory "
 	#dos2unix command execute
 	ssh -i "$PEM" ubuntu@"$NAC_SCHEDULER_IP_ADDR" -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null "dos2unix ~/$CRON_DIR_NAME/provision_nac.sh"
@@ -1005,7 +935,6 @@ if [[ -n "$FOURTH_ARG" ]]; then
 		validate_secret_values "$AZURE_KEYVAULT_NAME" cred-vault
 		validate_secret_values "$AZURE_KEYVAULT_NAME" sp-secret
 		validate_secret_values "$AZURE_KEYVAULT_NAME" github-organization
-		validate_secret_values "$AZURE_KEYVAULT_NAME" destination-container-url
 		validate_secret_values "$AZURE_KEYVAULT_NAME" volume-key-container-url
 		validate_secret_values "$AZURE_KEYVAULT_NAME" nmc-api-endpoint
 		validate_secret_values "$AZURE_KEYVAULT_NAME" nmc-api-username
@@ -1055,9 +984,6 @@ if [[ "$USE_PRIVATE_IP" == "Y" ]]; then
 	check_network_availability
 fi
 
-DESTINATION_STORAGE_ACCOUNT_CONNECTION_STRING=""
-get_destination_container_url $DESTINATION_CONTAINER_URL $EDGEAPPLIANCE_RESOURCE_GROUP 
-
 provision_ACS_if_Not_Available $ACS_RESOURCE_GROUP $ACS_ADMIN_APP_CONFIG_NAME $ACS_SERVICE_NAME
 
 ######################  Check : if NAC Scheduler Instance is Available ##############################
@@ -1069,15 +995,15 @@ if [ "$NAC_SCHEDULER_NAME" != "" ]; then
 	### User has provided the NACScheduler Name as Key-Value from 4th Argument
 	if [[ "$USE_PRIVATE_IP" != "Y" ]]; then
 		### Getting Public_IP of NAC Scheduler
-		NAC_SCHEDULER_IP_ADDR=$(az vm list-ip-addresses --name $NAC_SCHEDULER_NAME --resource-group $EDGEAPPLIANCE_RESOURCE_GROUP --query "[0].virtualMachine.network.publicIpAddresses[0].ipAddress" | cut -d":" -f 2 | tr -d '"' | tr -d ' ')
+		NAC_SCHEDULER_IP_ADDR=$(az vm list-ip-addresses --name $NAC_SCHEDULER_NAME --resource-group $NETWORKING_RESOURCE_GROUP --query "[0].virtualMachine.network.publicIpAddresses[0].ipAddress" | cut -d":" -f 2 | tr -d '"' | tr -d ' ')
 		echo "INFO ::: Public_IP of NAC Scheduler is: $NAC_SCHEDULER_IP_ADDR"
 	else
 		### Getting Private_IP of NAC Scheduler
 		echo "INFO ::: Private_IP of NAC Scheduler is: $NAC_SCHEDULER_IP_ADDR"
-		NAC_SCHEDULER_IP_ADDR=`az vm list-ip-addresses --name $NAC_SCHEDULER_NAME --resource-group $EDGEAPPLIANCE_RESOURCE_GROUP --query "[0].virtualMachine.network.privateIpAddresses[0]" | cut -d":" -f 2 | tr -d '"' | tr -d ' '`
+		NAC_SCHEDULER_IP_ADDR=`az vm list-ip-addresses --name $NAC_SCHEDULER_NAME --resource-group $NETWORKING_RESOURCE_GROUP --query "[0].virtualMachine.network.privateIpAddresses[0]" | cut -d":" -f 2 | tr -d '"' | tr -d ' '`
 	fi
 else
-	NAC_SCHEDULER_IP_ADDR=$(az vm list-ip-addresses --name NACScheduler --resource-group $EDGEAPPLIANCE_RESOURCE_GROUP --query "[0].virtualMachine.network.publicIpAddresses[0].ipAddress" | cut -d":" -f 2 | tr -d '"' | tr -d ' ')
+	NAC_SCHEDULER_IP_ADDR=$(az vm list-ip-addresses --name NACScheduler --resource-group $NETWORKING_RESOURCE_GROUP --query "[0].virtualMachine.network.publicIpAddresses[0].ipAddress" | cut -d":" -f 2 | tr -d '"' | tr -d ' ')
 fi
 echo $PEM_KEY_PATH
 AZURE_KEY=$(echo ${PEM_KEY_PATH} | sed 's/.*\/\([^ ]*\/[^.]*\).*/\1/' | cut -d "/" -f 2)
@@ -1089,7 +1015,7 @@ if [ "$NAC_SCHEDULER_IP_ADDR" != "" ]; then
 	echo "INFO ::: NAC Scheduler Instance is Available. IP Address: $NAC_SCHEDULER_IP_ADDR"
 	### Copy the Pem Key from provided path to current folder
 	cp $PEM_KEY_PATH ./
-	chmod 400 $PEM
+	sudo chmod 400 $PEM
 	### Call this function to add Local public IP to Network Security Group (NSG rule) of NAC_SCHEDULER IP
 	ls
 	echo $PEM
@@ -1116,7 +1042,7 @@ else
 	echo "INFO ::: $GIT_REPO"
 	echo "INFO ::: GIT_REPO_NAME - $GIT_REPO_NAME"
 	pwd
-	rm -rf "${GIT_REPO_NAME}"
+	sudo rm -rf "${GIT_REPO_NAME}"
 	COMMAND="git clone -b ${GIT_BRANCH_NAME} ${GIT_REPO}"
 	$COMMAND
 	RESULT=$?
@@ -1138,14 +1064,13 @@ else
 	### Create .tfvars file to be used by the NACScheduler Instance Provisioning
 	pwd
 	TFVARS_NAC_SCHEDULER="NACScheduler.tfvars"
-	rm -rf "$TFVARS_NAC_SCHEDULER" 
-	chmod 755 $PEM_KEY_PATH
+	sudo rm -rf "$TFVARS_NAC_SCHEDULER" 
+	sudo chmod 755 $PEM_KEY_PATH
 	cp $PEM_KEY_PATH ./
-	chmod 400 $PEM
+	sudo chmod 400 $PEM
 	echo "sp_application_id="\"$SP_APPLICATION_ID\" >>$TFVARS_NAC_SCHEDULER
 	echo "sp_secret="\"$SP_SECRET\" >>$TFVARS_NAC_SCHEDULER
 	echo "subscription_id="\"$AZURE_SUBSCRIPTION_ID\" >>$TFVARS_NAC_SCHEDULER
-	echo "edgeappliance_resource_group="\"$EDGEAPPLIANCE_RESOURCE_GROUP\" >>$TFVARS_NAC_SCHEDULER
 	echo "networking_resource_group="\"$NETWORKING_RESOURCE_GROUP\" >>$TFVARS_NAC_SCHEDULER
 	echo "region="\"$AZURE_LOCATION\" >>$TFVARS_NAC_SCHEDULER
 	if [[ "$NAC_SCHEDULER_NAME" != "" ]]; then

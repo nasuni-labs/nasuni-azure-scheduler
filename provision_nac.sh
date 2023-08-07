@@ -22,6 +22,80 @@ LOG_FILE=provision_nac_$DATE_WITH_TIME.log
 (
 START=$(date +%s)
 {
+disable_crontab(){
+        # Comment the matching cron jobs based on the script's directory name
+        USER_CRONTAB_DISABLE=$(echo "$USER_CRONTAB" | sed "/$SCRIPT_DIRECTORY_NAME/s/^/# /")
+
+        # Set the modified crontab for the user (commented)
+        echo "$USER_CRONTAB_DISABLE" | crontab -
+
+        echo "The cron jobs related to $SCRIPT_DIRECTORY_NAME have been DISABLED"
+}
+    
+enable_crontab(){
+        # Uncomment the matching cron jobs based on the script's directory name
+        USER_CRONTAB_ENABLE=$(echo "$USER_CRONTAB" | sed "/$SCRIPT_DIRECTORY_NAME/s/^# //")
+
+        # Set the modified crontab for the user (uncommented)
+        echo "$USER_CRONTAB_ENABLE" | crontab -
+
+        echo "The cron jobs related to $SCRIPT_DIRECTORY_NAME have been ENABLED"
+}
+get_destination_container_url(){
+	
+	EDGEAPPLIANCE_RESOURCE_GROUP=$1
+    RND=$(( $RANDOM % 10000 ))
+    DESTINATION_STORAGE_ACCOUNT_NAME="deststr$RND"
+    DESTINATION_CONTAINER_NAME="destcontainer"
+    #### Destination Storage account and container creation####
+    STORAGE_ACCOUNT_NAME=`az storage account create -n $DESTINATION_STORAGE_ACCOUNT_NAME -g $EDGEAPPLIANCE_RESOURCE_GROUP -l $NAC_AZURE_LOCATION --sku Standard_LRS --public-network-access Enabled --dns-endpoint-type Standard --require-infrastructure-encryption false --allow-cross-tenant-replication true --allow-shared-key-access true`
+    SAS_EXPIRY=$(date -u -d "1440 minutes" '+%Y-%m-%dT%H:%MZ')
+    ### Destination account-key: 
+	DESTINATION_ACCOUNT_KEY=`az storage account keys list --account-name ${DESTINATION_STORAGE_ACCOUNT_NAME} | jq -r '.[0].value'`
+    CONTAINER_NAME=`az storage container create -n $DESTINATION_CONTAINER_NAME --public-access off --account-name $DESTINATION_STORAGE_ACCOUNT_NAME --account-key $DESTINATION_ACCOUNT_KEY`
+	DESTINATION_CONTAINER_TOCKEN=`az storage account generate-sas --expiry ${SAS_EXPIRY} --permissions wdl --resource-types co --services b --account-key ${DESTINATION_ACCOUNT_KEY} --account-name ${DESTINATION_STORAGE_ACCOUNT_NAME} --https-only`
+	DESTINATION_CONTAINER_TOCKEN=$(echo "$DESTINATION_CONTAINER_TOCKEN" | tr -d \")
+	DESTINATION_CONTAINER_SAS_URL="https://$DESTINATION_STORAGE_ACCOUNT_NAME.blob.core.windows.net/?$DESTINATION_CONTAINER_TOCKEN"
+
+	DESTINATION_STORAGE_ACCOUNT_CONNECTION_STRING=`az storage account show-connection-string -g $EDGEAPPLIANCE_RESOURCE_GROUP --name ${DESTINATION_STORAGE_ACCOUNT_NAME} | jq -r '.connectionString'`
+	echo "INFO ::: SUCCESS :: Get destination container url."
+}
+update_destination_container_url(){
+	ACS_ADMIN_APP_CONFIG_NAME="$1"
+
+	# COMMAND SAMPLE="az appconfig kv set --endpoint https://nasuni-labs-acs-admin.azconfig.io --key test2 --value red2 --auth-mode login --yes"
+	for config_value in destination-container-name datasource-connection-string web-access-appliance-address
+	do
+		option="${config_value}" 
+		case ${option} in 
+		"destination-container-name")
+			KEY_LABEL="${NMC_VOLUME_NAME}-destination-container-name"
+            COMMAND="az appconfig kv set --endpoint https://$ACS_ADMIN_APP_CONFIG_NAME.azconfig.io --key destination-container-name --label $KEY_LABEL --value $DESTINATION_CONTAINER_NAME --auth-mode login --yes"
+			$COMMAND
+			;; 
+		"datasource-connection-string")
+			KEY_LABEL="${NMC_VOLUME_NAME}-datasource-connection-string"
+            COMMAND="az appconfig kv set --endpoint https://$ACS_ADMIN_APP_CONFIG_NAME.azconfig.io --key datasource-connection-string --label $KEY_LABEL --value $DESTINATION_STORAGE_ACCOUNT_CONNECTION_STRING --auth-mode login --yes"
+			$COMMAND
+			;;
+		"web-access-appliance-address")
+            KEY_LABEL="${NMC_VOLUME_NAME}-web-access-appliance-address"
+			COMMAND="az appconfig kv set --endpoint https://$ACS_ADMIN_APP_CONFIG_NAME.azconfig.io --key web-access-appliance-address --label $KEY_LABEL --value $WEB_ACCESS_APPLIANCE_ADDRESS --auth-mode login --yes"
+			$COMMAND
+			;; 
+		esac 
+	done
+
+	RESULT=$?
+	if [ $RESULT -eq 0 ]; then 
+		echo "INFO ::: appconfig update SUCCESS"
+	else
+		echo "INFO ::: appconfig update FAILED"
+        echo "Enabling the crontab as the code execution FAILS"
+        enable_crontab
+        exit 1
+	fi
+}
 
 parse_file_nmc_txt() {
     file="$1"
@@ -46,9 +120,6 @@ parse_file_NAC_txt() {
             "acs_resource_group") ACS_RESOURCE_GROUP="$value" ;;
             "acs_admin_app_config_name") ACS_ADMIN_APP_CONFIG_NAME="$value" ;;
             "github_organization") GITHUB_ORGANIZATION="$value" ;;
-            "nmc_volume_name") NMC_VOLUME_NAME="$value" ;;
-            "azure_location") AZURE_LOCATION="$value" ;;
-            "web_access_appliance_address") WEB_ACCESS_APPLIANCE_ADDRESS="$value" ;;
             "user_secret") KEY_VAULT_NAME="$value" ;;
             "sp_application_id") SP_APPLICATION_ID="$value" ;;
             "sp_secret") SP_SECRET="$value" ;;
@@ -60,6 +131,7 @@ parse_file_NAC_txt() {
             "use_private_ip") USE_PRIVATE_IP="$value" ;;
             "user_subnet_name") USER_SUBNET_NAME="$value" ;;
             "volume_key_blob_url") VOLUME_KEY_BLOB_URL="$value" ;;
+            "edge_appliance_group") EDGEAPPLIANCE_RESOURCE_GROUP="$value";;
             esac
         done <"$file"
 }
@@ -84,7 +156,7 @@ root_login(){
 get_volume_key_blob_url(){
 	VOLUME_KEY_BLOB_URL=$1
     
-	VOLUME_KEY_STORAGE_ACCOUNT_NAME=$(echo ${VOLUME_KEY_BLOB_URL}} | cut -d/ -f3-|cut -d'.' -f1) #"keysa"
+	VOLUME_KEY_STORAGE_ACCOUNT_NAME=$(echo ${VOLUME_KEY_BLOB_URL}} | cut -d/ -f3-|cut -d'.' -f1) 
 	VOLUME_KEY_BLOB_NAME=$(echo $VOLUME_KEY_BLOB_URL | cut -d/ -f4)
 	VOLUME_ACCOUNT_KEY=`az storage account keys list --account-name ${VOLUME_KEY_STORAGE_ACCOUNT_NAME} | jq -r '.[0].value'`
 	VOLUME_KEY_BLOB_TOCKEN=`az storage blob generate-sas --account-name ${VOLUME_KEY_STORAGE_ACCOUNT_NAME} --name ${VOLUME_KEY_BLOB_NAME} --permissions r --expiry ${SAS_EXPIRY} --account-key ${VOLUME_ACCOUNT_KEY} --blob-url ${VOLUME_KEY_BLOB_URL} --https-only`
@@ -140,6 +212,8 @@ validate_github() {
     REPO_EXISTS=$?
     if [ $REPO_EXISTS -ne 0 ]; then
             echo "ERROR ::: Unable to Access the git repo $GIT_REPO. Execution STOPPED"
+            echo "Enabling the crontab as the code execution FAILS"
+            enable_crontab
             exit 1
     else
             echo "INFO ::: git repo accessible. Continue . . . Provisioning . . . "
@@ -158,6 +232,9 @@ append_nmc_details_to_config_dat(){
     sed -i "s/SourceContainer:.*/SourceContainer: $SOURCE_CONTAINER/g" config.dat
     sed -i "s|SourceContainerSASURL.*||g" config.dat
     echo "SourceContainerSASURL: "$SOURCE_CONTAINER_SAS_URL >> config.dat
+    sed -i "s/DestinationContainer:.*/DestinationContainer: $DESTINATION_CONTAINER_NAME/g" config.dat
+    sed -i "s|DestinationContainerSASURL.*||g" config.dat
+    echo "DestinationContainerSASURL: "$DESTINATION_CONTAINER_SAS_URL >> config.dat
     sed -i "s|VolumeKeySASURL.*||g" config.dat
     echo "VolumeKeySASURL: "$VOLUME_KEY_BLOB_SAS_URL >> config.dat
     sed -i "s|\<PrevUniFSTOCHandle\>:.*||g" config.dat
@@ -177,10 +254,10 @@ nmc_api_call(){
     UNIFS_TOC_HANDLE=$(cat nmc_api_data_root_handle.txt)
     SOURCE_CONTAINER=$(cat nmc_api_data_source_container.txt)
     #move share_data file to var/www
-    chmod 775 /var/www/SearchUI_Web/
+    sudo chmod 775 /var/www/SearchUI_Web/
     sudo mv share_data.json /var/www/SearchUI_Web
     SAS_EXPIRY=`date -u -d "1440 minutes" '+%Y-%m-%dT%H:%MZ'`
-    rm -rf nmc_api_*.txt
+    sudo rm -rf nmc_api_*.txt
     SOURCE_STORAGE_ACCOUNT_KEY=`az storage account keys list --account-name ${SOURCE_STORAGE_ACCOUNT_NAME} | jq -r '.[0].value'`
     SOURCE_CONTAINER_TOCKEN=`az storage account generate-sas --expiry ${SAS_EXPIRY} --permissions r --resource-types co --services b --account-key ${SOURCE_STORAGE_ACCOUNT_KEY} --account-name ${SOURCE_STORAGE_ACCOUNT_NAME} --https-only`
     SOURCE_CONTAINER_TOCKEN=$(echo "$SOURCE_CONTAINER_TOCKEN" | tr -d \")
@@ -193,8 +270,7 @@ parse_config_file_for_user_secret_keys_values() {
         case "$key" in
             "Name") NAC_RESOURCE_GROUP_NAME="$value" ;;
             "AzureSubscriptionID") AZURE_SUBSCRIPTION_ID="$value" ;;
-            "DestinationContainer") DESTINATION_CONTAINER_NAME="$value" ;;
-            "DestinationContainerSASURL") DESTINATION_CONTAINER_SAS_URL="$value" ;;
+            "AzureLocation") NAC_AZURE_LOCATION="$value" ;;
             "vnetResourceGroup") NETWORKING_RESOURCE_GROUP="$value" ;;
             "vnetName") USER_VNET_NAME="$value" ;;
         esac
@@ -207,7 +283,7 @@ install_NAC_CLI() {
     ### Check for BETA NAC installation
     if [ "$USE_PRIVATE_IP" = "Y" ]; then
         sudo wget https://nac.cs.nasuni.com/downloads/beta/nac-manager-1.0.7.dev8-linux-x86_64.zip
-    elif [ "$AZURE_LOCATION" == "canadacentral" ]; then
+    elif [ "$NAC_AZURE_LOCATION" == "canadacentral" ]; then
         sudo unzip '*.zip'
         cd nac-manager-1.0.7.dev6-linux-x86_64
         sudo chmod 755 nac_manager
@@ -217,7 +293,7 @@ install_NAC_CLI() {
         sudo wget https://nac.cs.nasuni.com/downloads/nac-manager-1.0.6-linux-x86_64.zip
     fi
     
-    if [ "$AZURE_LOCATION" != "canadacentral" ]; then
+    if [ "$NAC_AZURE_LOCATION" != "canadacentral" ]; then
         sudo unzip '*.zip'
         sudo mv nac_manager /usr/local/bin/
     fi
@@ -226,56 +302,104 @@ install_NAC_CLI() {
 }
 
 add_metadat_to_destination_blob(){
-    # Azure Storage Account and Container information
-    CONTAINER_NAME="$1"
-    DESTINATION_CONTAINER_SAS_URL="$2"
-    NMC_VOLUME_NAME="$3"
+    NMC_VOLUME_NAME="$1"
 
     SAS_EXPIRY=`date -u -d "1440 minutes" '+%Y-%m-%dT%H:%MZ'`
 
-    STORAGE_ACCOUNT_NAME=$(echo ${DESTINATION_CONTAINER_SAS_URL} | cut -d/ -f3-|cut -d'.' -f1)
-    STORAGE_ACCOUNT_KEY=`az storage account keys list --account-name ${STORAGE_ACCOUNT_NAME} | jq -r '.[0].value'`
-
-    echo "INFO ::: CONTAINER NAME $CONTAINER_NAME"
+    echo "INFO ::: CONTAINER NAME $DESTINATION_CONTAINER_NAME"
     echo "INFO ::: NMC VOLUME NAME $NMC_VOLUME_NAME"
-    echo "INFO ::: DESTINATION STORAGE ACCOUNT NAME $STORAGE_ACCOUNT_NAME"
+    echo "INFO ::: DESTINATION STORAGE ACCOUNT NAME $DESTINATION_STORAGE_ACCOUNT_NAME"
 
     # Generate SAS token
-    CONTAINER_SAS_TOKEN=$(az storage container generate-sas --account-key "$STORAGE_ACCOUNT_KEY" --account-name "$STORAGE_ACCOUNT_NAME" --name "$CONTAINER_NAME" --permissions "wdl" --expiry "$SAS_EXPIRY" --https-only)
+    CONTAINER_SAS_TOKEN=$(az storage container generate-sas --account-key "$DESTINATION_ACCOUNT_KEY" --account-name "$DESTINATION_STORAGE_ACCOUNT_NAME" --name "$DESTINATION_CONTAINER_NAME" --permissions "wdl" --expiry "$SAS_EXPIRY" --https-only)
     CONTAINER_SAS_TOKEN=$(echo "$CONTAINER_SAS_TOKEN" | tr -d \")
 
     # Generate URL with SAS token
-    CONTAINER_SAS_URL="https://$STORAGE_ACCOUNT_NAME.blob.core.windows.net/$CONTAINER_NAME?$CONTAINER_SAS_TOKEN"
-
+    CONTAINER_SAS_URL="https://$DESTINATION_STORAGE_ACCOUNT_NAME.blob.core.windows.net/$DESTINATION_CONTAINER_NAME?$CONTAINER_SAS_TOKEN"
+    METADATA_ASSIGNMENT_STATUS="FAILED"
     echo "INFO ::: Assigning Metadata to all blobs present in destination container  ::: STARTED"
     BLOB_FILE_COUNT=`azcopy set-properties "$CONTAINER_SAS_URL" --metadata=volume_name=$NMC_VOLUME_NAME --recursive=true --output-type json --output-level essential | jq '. | select(.MessageType == "EndOfJob")' | jq -r '.MessageContent | fromjson | .TransfersCompleted'`
-    echo "INFO ::: Assigning Metadata to all blobs present in destination container  ::: COMPLETED"
+    
+    BLOB_FILE_COUNT=`echo $BLOB_FILE_COUNT | tr -d " "`
+    echo "INFO ::: Total count of blobs assigned with metadata= $BLOB_FILE_COUNT"
+    if [ "$BLOB_FILE_COUNT" != "" ]; then
+        if [ "$BLOB_FILE_COUNT" == 0 ];then
+            echo "ERROR ::: No blobs available in destination storage. Metadata assignment ::: FAILED"
+            METADATA_ASSIGNMENT_STATUS="FAILED"
+        else
+            echo "INFO ::: Metadata assignment ::: SUCCESS"
+            METADATA_ASSIGNMENT_STATUS="SUCCESS"
+        fi
+    else ### BLOB_FILE_COUNT" == "" so azcopy did not assign the metadata to blobs
+        echo "ERROR ::: Metadata assignment ::: FAILED"
+        METADATA_ASSIGNMENT_STATUS="FAILED"
+    fi
+
+    LATEST_TOC_HANDLE_FROM_TRACKER_JSON=""
+    if [ $METADATA_ASSIGNMENT_STATUS == "FAILED" ];then
+        #########################################################################
+        ### Data already Exported to Destination Storage Account.
+        ### To rerun, we need to Start with metadata Assignment.
+        ### So, Setting the  LATEST_TOC_HANDLE_PROCESSED as the UNIFS_TOC_HANDLE
+        #########################################################################
+        CURRENT_STATE="Export-completed-And-MetadataAssignment-Failed"
+        LATEST_TOC_HANDLE_PROCESSED=$UNIFS_TOC_HANDLE
+        generate_tracker_json $ACS_URL $ACS_REQUEST_URL $DEFAULT_URL $FREQUENCY $USER_SECRET $CREATED_BY $CREATED_ON $TRACKER_NMC_VOLUME_NAME $ANALYTICS_SERVICE $MOST_RECENT_RUN $CURRENT_STATE $LATEST_TOC_HANDLE_PROCESSED $NAC_SCHEDULER_NAME
+        echo "ERROR ::: Metadata Assignment Failed in destination container."
+        echo "Enabling the crontab as the code execution FAILS"
+        enable_crontab
+        exit 1
+    else
+        #########################################################################
+        ### Data already Exported to Destination Storage Account and Metadata Assignment is finished.
+        ### So, Setting the  LATEST_TOC_HANDLE_PROCESSED as the UNIFS_TOC_HANDLE
+        #########################################################################
+        CURRENT_STATE="Export-Completed-And-MetadataAssignment-Completed"
+        LATEST_TOC_HANDLE_PROCESSED=$UNIFS_TOC_HANDLE
+        generate_tracker_json $ACS_URL $ACS_REQUEST_URL $DEFAULT_URL $FREQUENCY $USER_SECRET $CREATED_BY $CREATED_ON $TRACKER_NMC_VOLUME_NAME $ANALYTICS_SERVICE $MOST_RECENT_RUN $CURRENT_STATE $LATEST_TOC_HANDLE_PROCESSED $NAC_SCHEDULER_NAME
+        echo "INFO ::: Metadata Assignment COMPLETED for all blobs in destination container."
+    fi
 }
 
 run_cognitive_search_indexer(){
     ACS_SERVICE_NAME=$1
     ACS_API_KEY=$2
-    ACS_INDEXER_NAME="indexer"
-
+    ACS_INDEXER_NAME="${ACS_NMC_VOLUME_NAME}indexer"
+    CURRENT_STATE="MetadataAssignment-Completed-Indexing-InProgress"
+    LATEST_TOC_HANDLE_FROM_TRACKER_JSON=""
     INDEXER_RUN_STATUS=`curl -d -X POST "https://${ACS_SERVICE_NAME}.search.windows.net/indexers/${ACS_INDEXER_NAME}/run?api-version=2021-04-30-Preview" -H "Content-Type:application/json" -H "api-key:${ACS_API_KEY}"`
     if [ $? -eq 0 ]; then
+        #########################################################################
+        ### Metadata Assignment already done to all blobs in Destination Storage Account.
+        ### Indexing is Successfully Done.
+        ### So, Setting the  LATEST_TOC_HANDLE_PROCESSED as the UNIFS_TOC_HANDLE
+        #########################################################################
+        LATEST_TOC_HANDLE_PROCESSED=$UNIFS_TOC_HANDLE
+        generate_tracker_json $ACS_URL $ACS_REQUEST_URL $DEFAULT_URL $FREQUENCY $USER_SECRET $CREATED_BY $CREATED_ON $TRACKER_NMC_VOLUME_NAME $ANALYTICS_SERVICE $MOST_RECENT_RUN $CURRENT_STATE $LATEST_TOC_HANDLE_PROCESSED $NAC_SCHEDULER_NAME
         echo "INFO ::: Cognitive Search Indexer Run ::: SUCCESS"
     else
-        echo "INFO ::: Cognitive Search Indexer Run ::: FAILED"
+        #########################################################################
+        ### Metadata Assignment already done to all blobs in Destination Storage Account.
+        ### Indexing is Failed. To rerun we need to start from indexing stage.
+        ### So, Setting the  LATEST_TOC_HANDLE_PROCESSED as the UNIFS_TOC_HANDLE
+        #########################################################################
+        CURRENT_STATE="MetadataAssignment-Completed-Indexing-Failed"
+        
+        LATEST_TOC_HANDLE_PROCESSED=$UNIFS_TOC_HANDLE
+        generate_tracker_json $ACS_URL $ACS_REQUEST_URL $DEFAULT_URL $FREQUENCY $USER_SECRET $CREATED_BY $CREATED_ON $TRACKER_NMC_VOLUME_NAME $ANALYTICS_SERVICE $MOST_RECENT_RUN $CURRENT_STATE $LATEST_TOC_HANDLE_PROCESSED $NAC_SCHEDULER_NAME
+        echo "ERROR ::: Cognitive Search Indexer Run ::: FAILED"
+        echo "Enabling the crontab as the code execution FAILS"
+        enable_crontab
         exit 1
     fi
 }
 
 destination_blob_cleanup(){
-    DESTINATION_CONTAINER_NAME="$1"
-    DESTINATION_CONTAINER_SAS_URL="$2"
-    ACS_SERVICE_NAME="$3"
-    ACS_API_KEY="$4"
-    USE_PRIVATE_IP="$5"
-    ACS_INDEXER_NAME="indexer"
-
-    DESTINATION_STORAGE_ACCOUNT_NAME=$(echo ${DESTINATION_CONTAINER_SAS_URL} | cut -d/ -f3-|cut -d'.' -f1) #"destinationbktsa"
-    DESTINATION_STORAGE_ACCOUNT_CONNECTION_STRING=`az storage account show-connection-string --name ${DESTINATION_STORAGE_ACCOUNT_NAME} | jq -r '.connectionString'`
+    ACS_SERVICE_NAME="$1"
+    ACS_API_KEY="$2"
+    USE_PRIVATE_IP="$3"
+    EDGEAPPLIANCE_RESOURCE_GROUP="$4"
+    ACS_INDEXER_NAME="${ACS_NMC_VOLUME_NAME}indexer"
 
     echo "INFO ::: BLOB FILE COUNT : $BLOB_FILE_COUNT"
     while :
@@ -294,27 +418,32 @@ destination_blob_cleanup(){
 
         if [[ $BLOB_FILE_COUNT -eq $TOTAL_INDEX_FILE_COUNT ]];then
             echo "All files are indexed, Start cleanup"
+            echo "NAC_Activity : Indexing Completed"
+            MOST_RECENT_RUN=$(date "+%Y:%m:%d-%H:%M:%S")
+            CURRENT_STATE="Indexing-Completed"
+            LATEST_TOC_HANDLE_PROCESSED="$UNIFS_TOC_HANDLE"
+            generate_tracker_json $ACS_URL $ACS_REQUEST_URL $DEFAULT_URL $FREQUENCY $USER_SECRET $CREATED_BY $CREATED_ON $TRACKER_NMC_VOLUME_NAME $ANALYTICS_SERVICE $MOST_RECENT_RUN $CURRENT_STATE $LATEST_TOC_HANDLE_PROCESSED $NAC_SCHEDULER_NAME
+            append_nmc_details_to_config_dat $UNIFS_TOC_HANDLE $SOURCE_CONTAINER $SOURCE_CONTAINER_SAS_URL $LATEST_TOC_HANDLE_PROCESSED
             ### Post Indexing Cleanup from Destination Buckets
-            echo "INFO ::: Post Indexing Cleanup from Destination Blob Container: $DESTINATION_CONTAINER_NAME ::: STARTED"
-            COMMAND="az storage blob delete-batch --account-name $DESTINATION_STORAGE_ACCOUNT_NAME --source $DESTINATION_CONTAINER_NAME --connection-string $DESTINATION_STORAGE_ACCOUNT_CONNECTION_STRING --verbose"
+            echo "INFO ::: Deleting the storage account : $DESTINATION_STORAGE_ACCOUNT_NAME ::: STARTED"
+            COMMAND="az storage account delete -n $DESTINATION_STORAGE_ACCOUNT_NAME -g $EDGEAPPLIANCE_RESOURCE_GROUP --yes"            
             $COMMAND
-            echo "INFO ::: Post Indexing Cleanup from Destination Blob Container : $DESTINATION_CONTAINER_NAME ::: FINISHED"
+            echo "INFO ::: Deleting the storage account : $DESTINATION_STORAGE_ACCOUNT_NAME ::: COMPLETED"
             if [ "$USE_PRIVATE_IP" = "Y" ]; then
-                remove_shared_private_access $DESTINATION_CONTAINER_SAS_URL $PRIVATE_CONNECTION_NAME $ENDPOINT_NAME $ACS_URL
+                remove_shared_private_access $EDGEAPPLIANCE_RESOURCE_GROUP $PRIVATE_CONNECTION_NAME $ENDPOINT_NAME $ACS_URL
             fi
-            exit 1
+            echo "INFO ::: $TOTAL_INDEX_FILE_COUNT files Indexed for snapshot ID : $LATEST_TOC_HANDLE_PROCESSED of Volume Name : $NMC_VOLUME_NAME !!!!"
         fi
+        break
     done
 }
 
 create_shared_private_access(){
     
-    DESTINATION_CONTAINER_SAS_URL="$1"
+    EDGEAPPLIANCE_RESOURCE_GROUP="$1"
     ACS_URL="$2"
     ENDPOINT_NAME="$3"
 
-    DESTINATION_STORAGE_ACCOUNT_NAME=$(echo ${DESTINATION_CONTAINER_SAS_URL} | cut -d/ -f3-| cut -d'.' -f1)
-    DESTINATION_STORAGE_ACCOUNT_RESOURCE_GROUP=`az storage account show -n ${DESTINATION_STORAGE_ACCOUNT_NAME} | jq -r '.resourceGroup'`
     DESTINATION_STORAGE_ACCOUNT_ID=`az storage account show -n ${DESTINATION_STORAGE_ACCOUNT_NAME} | jq -r '.id'`
 
     ACS_NAME=$(echo ${ACS_URL} | cut -d/ -f3-| cut -d'.' -f1)
@@ -327,36 +456,37 @@ create_shared_private_access(){
 
     if [ "$SHARED_LINK_STATUS" == "Pending" ] && [ "$SHARED_LINK_PROVISIONING_STATE" == "Succeeded" ] ; then
      	
-        PRIVATE_ENDPOINT_LIST=`az network private-endpoint-connection list -g $DESTINATION_STORAGE_ACCOUNT_RESOURCE_GROUP -n $DESTINATION_STORAGE_ACCOUNT_NAME --type Microsoft.Storage/storageAccounts`
+        PRIVATE_ENDPOINT_LIST=`az network private-endpoint-connection list -g $EDGEAPPLIANCE_RESOURCE_GROUP -n $DESTINATION_STORAGE_ACCOUNT_NAME --type Microsoft.Storage/storageAccounts`
 
         PRIVATE_CONNECTION_NAME=$(echo "$PRIVATE_ENDPOINT_LIST" | jq '.[]' | jq 'select(.properties.privateEndpoint.id | contains('\"$ENDPOINT_NAME\"'))'| jq -r '.name')
 
         echo "INFO ::: Approve Private Endpoint Connection ::: STARTED"
-        CONNECTION_APPROVE=`az network private-endpoint-connection approve -g $DESTINATION_STORAGE_ACCOUNT_RESOURCE_GROUP -n $PRIVATE_CONNECTION_NAME --resource-name $DESTINATION_STORAGE_ACCOUNT_NAME --type Microsoft.Storage/storageAccounts --description "Request Approved"`
+        CONNECTION_APPROVE=`az network private-endpoint-connection approve -g $EDGEAPPLIANCE_RESOURCE_GROUP -n $PRIVATE_CONNECTION_NAME --resource-name $DESTINATION_STORAGE_ACCOUNT_NAME --type Microsoft.Storage/storageAccounts --description "Request Approved"`
         if [[ "$(echo $CONNECTION_APPROVE | jq -r '.properties.privateLinkServiceConnectionState.status')" == "Approved" ]]; then
             echo "INFO ::: Private Endpoint Connection "$PRIVATE_CONNECTION_NAME" is Approved"
         else
-            echo "INFO ::: Private Endpoint Connection "$PRIVATE_CONNECTION_NAME" is NOT Approved"
+            echo "ERROR ::: Private Endpoint Connection "$PRIVATE_CONNECTION_NAME" is NOT Approved"
+            echo "Enabling the crontab as the code execution FAILS"
+            enable_crontab
             exit 1
         fi
     else
-        echo "INFO ::: Shared Link "$ENDPOINT_NAME" is NOT Created Properly"
+        echo "ERROR ::: Shared Link "$ENDPOINT_NAME" is NOT Created Properly"
+        echo "Enabling the crontab as the code execution FAILS"
+        enable_crontab
         exit 1
     fi
 }
 
 remove_shared_private_access(){
-    
-    DESTINATION_CONTAINER_SAS_URL="$1"
+    EDGEAPPLIANCE_RESOURCE_GROUP="$1"
     PRIVATE_CONNECTION_NAME="$2"
     ENDPOINT_NAME="$3"
     ACS_URL="$4"
 
-    DESTINATION_STORAGE_ACCOUNT_NAME=$(echo ${DESTINATION_CONTAINER_SAS_URL} | cut -d/ -f3-| cut -d'.' -f1)
-    DESTINATION_STORAGE_ACCOUNT_RESOURCE_GROUP=`az storage account show -n ${DESTINATION_STORAGE_ACCOUNT_NAME} | jq -r '.resourceGroup'`
-    
+
     echo "INFO ::: Delete Private Endpoint Connection ::: STARTED"
-    DELETE_PRIVATE_ENDPOINT_CONNECTION=`az network private-endpoint-connection delete -g $DESTINATION_STORAGE_ACCOUNT_RESOURCE_GROUP -n $PRIVATE_CONNECTION_NAME --resource-name $DESTINATION_STORAGE_ACCOUNT_NAME  --type Microsoft.Storage/storageAccounts --yes -y`
+    DELETE_PRIVATE_ENDPOINT_CONNECTION=`az network private-endpoint-connection delete -g $EDGEAPPLIANCE_RESOURCE_GROUP -n $PRIVATE_CONNECTION_NAME --resource-name $DESTINATION_STORAGE_ACCOUNT_NAME  --type Microsoft.Storage/storageAccounts --yes -y`
     echo "INFO ::: Delete Private Endpoint Connection ::: FINISHED"
     ACS_NAME=$(echo ${ACS_URL} | cut -d/ -f3-| cut -d'.' -f1)
 
@@ -383,13 +513,15 @@ create_azure_function_private_dns_zone_virtual_network_link(){
 		
 		VIRTUAL_NETWORK_ID=`az network vnet show -g $AZURE_FUNCTION_PRIVATE_DNS_ZONE_VIRTUAL_NETWORK_LINK_RESOURCE_GROUP -n $AZURE_FUNCTION_VNET_NAME --query id --output tsv 2> /dev/null`
 		
-		echo "STARTED ::: $AZURE_FUNCTION_PRIVAE_DNS_ZONE_NAME dns zone virtual link creation ::: $LINK_NAME"
+		echo "INFO ::: START $AZURE_FUNCTION_PRIVAE_DNS_ZONE_NAME dns zone virtual link creation ::: $LINK_NAME"
 		
 		FUNCTION_APP_DNS_PRIVATE_LINK=`az network private-dns link vnet create -g $AZURE_FUNCTION_PRIVATE_DNS_ZONE_VIRTUAL_NETWORK_LINK_RESOURCE_GROUP -n $LINK_NAME -z $AZURE_FUNCTION_PRIVAE_DNS_ZONE_NAME -v $VIRTUAL_NETWORK_ID -e False | jq -r '.provisioningState'`
 		if [ "$FUNCTION_APP_DNS_PRIVATE_LINK" == "Succeeded" ]; then
-			echo "COMPLETED ::: $AZURE_FUNCTION_PRIVAE_DNS_ZONE_NAME dns zone virtual link successfully created ::: $LINK_NAME"
+			echo "INFO ::: COMPLETED ::: $AZURE_FUNCTION_PRIVAE_DNS_ZONE_NAME dns zone virtual link successfully created ::: $LINK_NAME"
 		else
 			echo "ERROR ::: $AZURE_FUNCTION_PRIVAE_DNS_ZONE_NAME dns zone virtual link creation failed"
+            echo "Enabling the crontab as the code execution FAILS"
+            enable_crontab
 			exit 1
 		fi
 	fi
@@ -414,14 +546,16 @@ create_storage_account_private_dns_zone_virtual_network_link(){
 		
 		VIRTUAL_NETWORK_ID=`az network vnet show -g $STORAGE_ACCOUNT_PRIVATE_DNS_ZONE_VIRTUAL_NETWORK_LINK_RESOURCE_GROUP -n $STORAGE_ACCOUNT_VNET_NAME --query id --output tsv 2> /dev/null`
 		
-		echo "STARTED ::: $STORAGE_ACCOUNT_PRIVAE_DNS_ZONE_NAME dns zone virtual link creation ::: $LINK_NAME"
+		echo "INFO ::: STARTED : $STORAGE_ACCOUNT_PRIVAE_DNS_ZONE_NAME dns zone virtual link creation ::: $LINK_NAME"
 		
 		STORAGE_ACCOUNT_DNS_PRIVATE_LINK=`az network private-dns link vnet create -g $STORAGE_ACCOUNT_PRIVATE_DNS_ZONE_VIRTUAL_NETWORK_LINK_RESOURCE_GROUP -n $LINK_NAME -z $STORAGE_ACCOUNT_PRIVAE_DNS_ZONE_NAME -v $VIRTUAL_NETWORK_ID -e False  | jq -r '.provisioningState'`
 
 		if [ "$STORAGE_ACCOUNT_DNS_PRIVATE_LINK" == "Succeeded" ]; then
-			echo "COMPLETED ::: $STORAGE_ACCOUNT_PRIVAE_DNS_ZONE_NAME dns zone virtual link successfully created ::: $LINK_NAME"
+			echo "INFO ::: COMPLETED : $STORAGE_ACCOUNT_PRIVAE_DNS_ZONE_NAME dns zone virtual link successfully created ::: $LINK_NAME"
 		else
 			echo "ERROR ::: $STORAGE_ACCOUNT_PRIVAE_DNS_ZONE_NAME dns zone virtual link creation failed"
+            echo "Enabling the crontab as the code execution FAILS"
+            enable_crontab
 			exit 1
 		fi
 	fi		
@@ -442,14 +576,16 @@ create_azure_function_private_dns_zone(){
 	else
 		echo "INFO ::: $AZURE_FUNCTION_PRIVAE_DNS_ZONE_NAME dns zone does not exist. It will create a new $AZURE_FUNCTION_PRIVAE_DNS_ZONE_NAME."
 		
-		echo "STARTED ::: $AZURE_FUNCTION_PRIVAE_DNS_ZONE_NAME dns zone creation"
+		echo "INFO ::: STARTED : $AZURE_FUNCTION_PRIVAE_DNS_ZONE_NAME dns zone creation"
 		
 		FUNCTION_APP_DNS_ZONE=`az network private-dns zone create -g $AZURE_FUNCTION_PRIVAE_DNS_ZONE_RESOURCE_GROUP -n $AZURE_FUNCTION_PRIVAE_DNS_ZONE_NAME | jq -r '.provisioningState'`
 		if [ "$FUNCTION_APP_DNS_ZONE" == "Succeeded" ]; then
-			echo "COMPLETED ::: $AZURE_FUNCTION_PRIVAE_DNS_ZONE_NAME dns zone successfully created"
+			echo "INFO ::: COMPLETED : $AZURE_FUNCTION_PRIVAE_DNS_ZONE_NAME dns zone successfully created"
 			create_azure_function_private_dns_zone_virtual_network_link $AZURE_FUNCTION_PRIVAE_DNS_ZONE_RESOURCE_GROUP $AZURE_FUNCTION_VNET_NAME
 		else
 			echo "ERROR ::: $AZURE_FUNCTION_PRIVAE_DNS_ZONE_NAME dns zone creation failed"
+            echo "Enabling the crontab as the code execution FAILS"
+            enable_crontab
 			exit 1
 		fi
 	fi
@@ -470,14 +606,16 @@ create_storage_account_private_dns_zone(){
 	else
 		echo "INFO ::: $STORAGE_ACCOUNT_PRIVAE_DNS_ZONE_NAME dns zone does not exist. It will create a new $STORAGE_ACCOUNT_PRIVAE_DNS_ZONE_NAME."
 		
-		echo "STARTED ::: $STORAGE_ACCOUNT_PRIVAE_DNS_ZONE_NAME dns zone creation"
+		echo "INFO ::: STARTED : $STORAGE_ACCOUNT_PRIVAE_DNS_ZONE_NAME dns zone creation"
 		
 		STORAGE_ACCOUNT_APP_DNS_ZONE=`az network private-dns zone create -g $STORAGE_ACCOUNT_PRIVAE_DNS_ZONE_RESOURCE_GROUP -n $STORAGE_ACCOUNT_PRIVAE_DNS_ZONE_NAME | jq -r '.provisioningState'`
 		if [ "$STORAGE_ACCOUNT_APP_DNS_ZONE" == "Succeeded" ]; then
-			echo "COMPLETED ::: $STORAGE_ACCOUNT_PRIVAE_DNS_ZONE_NAME dns zone successfully created"
+			echo "INFO ::: COMPLETED : $STORAGE_ACCOUNT_PRIVAE_DNS_ZONE_NAME dns zone successfully created"
 			create_storage_account_private_dns_zone_virtual_network_link $STORAGE_ACCOUNT_PRIVAE_DNS_ZONE_RESOURCE_GROUP $STORAGE_ACCOUNT_VNET_NAME
 		else
 			echo "ERROR ::: $STORAGE_ACCOUNT_PRIVAE_DNS_ZONE_NAME dns zone creation failed"
+            echo "Enabling the crontab as the code execution FAILS"
+            enable_crontab
 			exit 1
 		fi
 	fi
@@ -490,15 +628,15 @@ get_subnets(){
     REQUIRED_SUBNET_COUNT="$4"
 
     DIRECTORY=$(pwd)
-    echo "Directory: $DIRECTORY"
+    # echo "INFO ::: Directory: $DIRECTORY"
     FILENAME="$DIRECTORY/create_subnet_infra.py"
-    chmod 777 $FILENAME
+    sudo chmod 777 $FILENAME
     OUTPUT=$(python3 $FILENAME $NETWORKING_RESOURCE_GROUP $USER_VNET_NAME $SUBNET_MASK $REQUIRED_SUBNET_COUNT 2>&1 >/dev/null > available_subnets.txt)
     COUNTER=0
     NAC_SUBNETS=()
     DISCOVERY_OUTBOUND_SUBNET=()
     SUBNET_LIST=(`cat available_subnets.txt`)
-    echo "Subnet list from file : $SUBNET_LIST"
+    echo "INFO ::: Get Subnet CIDR Range list from file : $SUBNET_LIST"
     # Use comma as separator and apply as pattern
     for SUBNET in ${SUBNET_LIST//,/ }
     do
@@ -522,12 +660,32 @@ get_subnets(){
     DISCOVERY_OUTBOUND_SUBNET=$(echo "$DISCOVERY_OUTBOUND_SUBNET" | sed 's/ //g')
 }
 
-###### START - EXECUTION ######
+read_latest_toc_handle_from_tracker_json(){
+	TRACEPATH="${NMC_VOLUME_NAME}_${ANALYTICS_SERVICE}"
+	echo "INFO ::: Tracepath of TrackerJson: $TRACEPATH"
+	TRACKER_JSON=$(cat $JSON_FILE_PATH)
+	# echo "INFO ::: Content of Tracker json" $TRACKER_JSON
+	LATEST_TOC_HANDLE_FROM_TRACKER_JSON=$(echo $TRACKER_JSON | jq -r .INTEGRATIONS.\"$TRACEPATH\"._NAC_activity.latest_toc_handle_processed)
+	if [ "$LATEST_TOC_HANDLE_FROM_TRACKER_JSON" =  "null" ] ; then
+		LATEST_TOC_HANDLE_FROM_TRACKER_JSON="null"
+	fi
+	echo "INFO ::: Latest_toc_handle from TRACKER_JSON: $LATEST_TOC_HANDLE_FROM_TRACKER_JSON"
+
+}
+
+###################################################################################
+############################# START - EXECUTION ###################################
 ### GIT_BRANCH_NAME decides the current GitHub branch from Where Code is being executed
 GIT_BRANCH_NAME="nac_v1.0.7.dev6"
 if [[ $GIT_BRANCH_NAME == "" ]]; then
     GIT_BRANCH_NAME="main"
 fi
+SCRIPT_DIRECTORY="$(cd "$(dirname "$0")" ; pwd -P)"
+SCRIPT_DIRECTORY_NAME="${SCRIPT_DIRECTORY##*/}"
+USER_CRONTAB=$(crontab -l)
+echo "Disabling the crontab as the execution started"
+disable_crontab
+CURRENT_STATE="Provision-NAC-Started"
 NMC_API_ENDPOINT=""
 NMC_API_USERNAME=""
 NMC_API_PASSWORD=""
@@ -535,12 +693,21 @@ NMC_VOLUME_NAME=""
 WEB_ACCESS_APPLIANCE_ADDRESS=""
 DESTINATION_STORAGE_ACCOUNT_NAME=""
 DESTINATION_STORAGE_ACCOUNT_CONNECTION_STRING=""
+DESTINATION_CONTAINER_SAS_URL=""
+DESTINATION_CONTAINER_NAME=""
+DESTINATION_ACCOUNT_KEY=""
 PRIVATE_CONNECTION_NAME=""
 ROOT_USER=""
 BLOB_FILE_COUNT=0
 SAS_EXPIRY=`date -u -d "1440 minutes" '+%Y-%m-%dT%H:%MZ'`
 ENDPOINT_NAME="acs-private-connection"
 parse_file_NAC_txt "NAC.txt"
+parse_config_file_for_user_secret_keys_values config.dat
+parse_file_nmc_txt "nmc_details.txt"
+NETWORKING_RESOURCE_GROUP=$(echo $NETWORKING_RESOURCE_GROUP | tr -d ' ')
+USER_VNET_NAME=$(echo $USER_VNET_NAME | tr -d ' ')
+AZURE_SUBSCRIPTION_ID=$(echo $AZURE_SUBSCRIPTION_ID | tr -d ' ')
+NAC_AZURE_LOCATION=$(echo $NAC_AZURE_LOCATION | tr -d ' ')
 get_volume_key_blob_url $VOLUME_KEY_BLOB_URL
 sp_login $SP_APPLICATION_ID $SP_SECRET $AZURE_TENANT_ID
 root_login $CRED_VAULT
@@ -548,9 +715,8 @@ ACS_RESOURCE_GROUP=$(echo "$ACS_RESOURCE_GROUP" | tr -d '"')
 ACS_ADMIN_APP_CONFIG_NAME=$(echo "$ACS_ADMIN_APP_CONFIG_NAME" | tr -d '"')
 add_appconfig_role_assignment
 USE_PRIVATE_IP=$(echo "$USE_PRIVATE_IP" | tr -d '"')
-##################################### START TRACKER JSON Creation ###################################################################
 
-echo "NAC_Activity : Export In Progress"
+echo "INFO ::: NAC_Activity : Export In Progress"
 ACS_URL=`az appconfig kv show --name $ACS_ADMIN_APP_CONFIG_NAME --key nmc-api-acs-url --label nmc-api-acs-url --query value --output tsv 2> /dev/null`
 ACS_REQUEST_URL=$ACS_URL"/indexes/index/docs?api-version=2021-04-30-Preview&search=*"
 DEFAULT_URL="/search/index.html"
@@ -570,38 +736,43 @@ echo "INFO ::: JSON_FILE_PATH:" $JSON_FILE_PATH
 if [ -f "$JSON_FILE_PATH" ] ; then
 	TRACEPATH="${NMC_VOLUME_NAME}_${ANALYTICS_SERVICE}"
 	TRACKER_JSON=$(cat $JSON_FILE_PATH)
-	echo "Tracker json" $TRACKER_JSON
-	LATEST_TOC_HANDLE_PROCESSED=$(echo $TRACKER_JSON | jq -r .INTEGRATIONS.\"$TRACEPATH\"._NAC_activity.latest_toc_handle_processed)
-	#if [ -z "$LATEST_TOC_HANDLE_PROCESSED" -a "$LATEST_TOC_HANDLE_PROCESSED" == " " ]; then	
+	# echo "Tracker json" $TRACKER_JSON
+	LATEST_TOC_HANDLE_PROCESSED=$(echo $TRACKER_JSON | jq -r .INTEGRATIONS.\"$TRACEPATH\"._NAC_activity.latest_toc_handle_processed)	
 	if [ -z "$LATEST_TOC_HANDLE_PROCESSED" ] || [ "$LATEST_TOC_HANDLE_PROCESSED" == " " ] || [ "$LATEST_TOC_HANDLE_PROCESSED" == "null" ]; then	
  		LATEST_TOC_HANDLE_PROCESSED="null"
+    else
+        LATEST_TOC_HANDLE_PROCESSED="$LATEST_TOC_HANDLE_PROCESSED"
 	fi
-	echo "INFO LATEST_TOC_HANDLE PROCESSED"  $LATEST_TOC_HANDLE_PROCESSED
+	echo "INFO ::: Latest processed SnapshotID from NAC Integration Tracker: "  $LATEST_TOC_HANDLE_PROCESSED
 fi
 
 generate_tracker_json $ACS_URL $ACS_REQUEST_URL $DEFAULT_URL $FREQUENCY $USER_SECRET $CREATED_BY $CREATED_ON $TRACKER_NMC_VOLUME_NAME $ANALYTICS_SERVICE $MOST_RECENT_RUN $CURRENT_STATE $LATEST_TOC_HANDLE_PROCESSED $NAC_SCHEDULER_NAME
 pwd
 echo "INFO ::: current user :-"`whoami`
-################################################
+#############################################################################################################
 
 nmc_api_call "nmc_details.txt"
-echo "UNIFS TOC HANDLE: $UNIFS_TOC_HANDLE"
-echo "LATEST TOC HANDLE PROCESSED: $LATEST_TOC_HANDLE_PROCESSED"
+echo "INFO ::: Snapshot ID (UniFS toc handle) retrieved by NMC Api call: $UNIFS_TOC_HANDLE"
+echo "INFO ::: Previous snapshot processed is: $LATEST_TOC_HANDLE_PROCESSED"
 
 if [[ "$UNIFS_TOC_HANDLE" == "$LATEST_TOC_HANDLE_PROCESSED" ]]; then
-    echo "INFO ::: Previous TOC handle is same as Latest TOC handle. Files are already moved to Destination Bucket."
+    echo "INFO ::: Couldn't find a new Snapshot of the volume: $NMC_VOLUME_NAME to process."
+    echo "Enabling the crontab as the code execution fails"
+    enable_crontab
     exit 1
 fi
 
-append_nmc_details_to_config_dat $UNIFS_TOC_HANDLE $SOURCE_CONTAINER $SOURCE_CONTAINER_SAS_URL $LATEST_TOC_HANDLE_PROCESSED
-parse_config_file_for_user_secret_keys_values config.dat
- 
-NETWORKING_RESOURCE_GROUP=$(echo $NETWORKING_RESOURCE_GROUP | tr -d ' ')
-USER_VNET_NAME=$(echo $USER_VNET_NAME | tr -d ' ')
-AZURE_SUBSCRIPTION_ID=$(echo $AZURE_SUBSCRIPTION_ID | tr -d ' ')
+### To make Upper case value of nmc_volume_name to Lower case 
+ACS_NMC_VOLUME_NAME=$(echo "$NMC_VOLUME_NAME" | tr '[:upper:]' '[:lower:]')
+### To remove all characters from acs_nmc_volume_name that are not alphanumeric
+ACS_NMC_VOLUME_NAME=$(echo "$ACS_NMC_VOLUME_NAME" | tr -cd '[:alnum:]')
 
+get_destination_container_url $EDGEAPPLIANCE_RESOURCE_GROUP
+update_destination_container_url $ACS_ADMIN_APP_CONFIG_NAME
+append_nmc_details_to_config_dat $UNIFS_TOC_HANDLE $SOURCE_CONTAINER $SOURCE_CONTAINER_SAS_URL $LATEST_TOC_HANDLE_PROCESSED
+ 
 if [ "$USE_PRIVATE_IP" = "Y" ]; then
-    create_shared_private_access $DESTINATION_CONTAINER_SAS_URL $ACS_URL $ENDPOINT_NAME
+    create_shared_private_access $EDGEAPPLIANCE_RESOURCE_GROUP $ACS_URL $ENDPOINT_NAME
     NAC_SUBNETS=()
     DISCOVERY_OUTBOUND_SUBNET=()
     get_subnets $NETWORKING_RESOURCE_GROUP $USER_VNET_NAME "28" "17"
@@ -611,29 +782,31 @@ fi
 NAC_RESOURCE_GROUP_NAME_STATUS=`az group exists -n ${NAC_RESOURCE_GROUP_NAME} --subscription ${AZURE_SUBSCRIPTION_ID} 2> /dev/null`
 if [ "$NAC_RESOURCE_GROUP_NAME_STATUS" = "true" ]; then
    echo "INFO ::: Provided Azure NAC Resource Group Name is Already Exist : $NAC_RESOURCE_GROUP_NAME"
+   echo "Enabling the crontab as the code execution FAILS"
+   enable_crontab
    exit 1
 fi
-##################################### START NAC Provisioning ######################################################################
+##################################### START NAC Provisioning ###################################################
 CONFIG_DAT_FILE_NAME="config.dat"
 CONFIG_DAT_FILE_PATH="/usr/local/bin"
 sudo chmod 777 $CONFIG_DAT_FILE_PATH
-CONFIG_DAT_FILE=$CONFIG_DAT_FILE_PATH/$CONFIG_DAT_FILE_NAME
+CONFIG_DAT_FILE=$CONFIG_DAT_FILE_PATH/$NMC_VOLUME_NAME.dat
 sudo rm -rf "$CONFIG_DAT_FILE"
-cp $CONFIG_DAT_FILE_NAME $CONFIG_DAT_FILE_PATH
+cp $CONFIG_DAT_FILE_NAME $CONFIG_DAT_FILE_PATH/$NMC_VOLUME_NAME.dat
 
 echo "INFO ::: current user :-"`whoami`
 ########## Download NAC Provisioning Code from GitHub ##########
 ### GITHUB_ORGANIZATION defaults to nasuni-labs
 REPO_FOLDER="nasuni-azure-analyticsconnector"
 validate_github $GITHUB_ORGANIZATION $REPO_FOLDER
-########################### Git Clone : NAC Provisioning Repo ###############################################################
+########################### Git Clone : NAC Provisioning Repo ####################################################
 echo "INFO ::: BEGIN - Git Clone !!!"
 GIT_REPO_NAME=$(echo ${GIT_REPO} | sed 's/.*\/\([^ ]*\/[^.]*\).*/\1/' | cut -d "/" -f 2)
 echo "INFO ::: GIT_REPO : $GIT_REPO"
 echo "INFO ::: GIT_REPO_NAME : $GIT_REPO_NAME"
 ls
 echo "INFO ::: Deleting the Directory: $GIT_REPO_NAME"
-rm -rf "${GIT_REPO_NAME}"
+sudo rm -rf "${GIT_REPO_NAME}"
 pwd
 COMMAND="git clone -b $GIT_BRANCH_NAME $GIT_REPO"
 $COMMAND
@@ -643,10 +816,12 @@ if [ $RESULT -eq 0 ]; then
 else
     echo "ERROR ::: FINISH ::: GIT Clone FAILED for repo ::: $GIT_REPO_NAME"
     echo "ERROR ::: Unable to Proceed with NAC Provisioning."
+    echo "Enabling the crontab as the code execution FAILS"
+    enable_crontab
     exit 1
 fi
 # move config. dat to nasuni-azure-analyticsconnector
-cp $CONFIG_DAT_FILE_NAME $GIT_REPO_NAME
+cp $CONFIG_DAT_FILE_NAME $GIT_REPO_NAME/$NMC_VOLUME_NAME.dat
 ########################### Completed - Git Clone  ###############################################################
 cd "${GIT_REPO_NAME}"
 NAC_MANAGER_EXIST='N'
@@ -666,14 +841,14 @@ $COMMAND
 echo "INFO ::: NAC provisioning ::: BEGIN - Executing ::: Terraform init."
 COMMAND="terraform init"
 $COMMAND
-chmod 755 $(pwd)/*
+sudo chmod 755 $(pwd)/*
 echo "INFO ::: NAC provisioning ::: FINISH - Executing ::: Terraform init."
 
 NAC_TFVARS_FILE_NAME="NAC.tfvars"
-rm -rf "$NAC_TFVARS_FILE_NAME"
+sudo rm -rf "$NAC_TFVARS_FILE_NAME"
 echo "acs_resource_group="\"$ACS_RESOURCE_GROUP\" >>$NAC_TFVARS_FILE_NAME
 echo "acs_admin_app_config_name="\"$ACS_ADMIN_APP_CONFIG_NAME\" >>$NAC_TFVARS_FILE_NAME
-echo "web_access_appliance_address="\"$WEB_ACCESS_APPLIANCE_ADDRESS\" >>$NAC_TFVARS_FILE_NAME
+echo "acs_nmc_volume_name="\"$NMC_VOLUME_NAME\" >>$NAC_TFVARS_FILE_NAME
 if [[ "$USE_PRIVATE_IP" == "Y" ]]; then
 	echo "networking_resource_group="\"$NETWORKING_RESOURCE_GROUP\" >>$NAC_TFVARS_FILE_NAME
     echo "user_vnet_name="\"$USER_VNET_NAME\" >>$NAC_TFVARS_FILE_NAME
@@ -695,46 +870,21 @@ if [[ "$USE_PRIVATE_IP" == "Y" ]]; then
     create_storage_account_private_dns_zone $NETWORKING_RESOURCE_GROUP $USER_VNET_NAME
 fi
 
-import_configuration(){
-    ### Import Configurations details if exist
-    INDEX_ENDPOINT_KEY="index-endpoint"
-    INDEX_ENDPOINT_APP_CONFIG_STATUS=`az appconfig kv show --name $ACS_ADMIN_APP_CONFIG_NAME --key $INDEX_ENDPOINT_KEY --label $INDEX_ENDPOINT_KEY --query value --output tsv 2> /dev/null`
-    if [ "$INDEX_ENDPOINT_APP_CONFIG_STATUS" != "" ]; then
-        echo "INFO ::: index-endpoint already exist in the App Config. Importing the existing index-endpoint. "
-        COMMAND="terraform import -var-file=$NAC_TFVARS_FILE_NAME azurerm_app_configuration_key.$INDEX_ENDPOINT_KEY /subscriptions/$AZURE_SUBSCRIPTION_ID/resourceGroups/$ACS_RESOURCE_GROUP/providers/Microsoft.AppConfiguration/configurationStores/$ACS_ADMIN_APP_CONFIG_NAME/AppConfigurationKey/$INDEX_ENDPOINT_KEY/Label/$INDEX_ENDPOINT_KEY"
-        $COMMAND
-    else
-        echo "INFO ::: $INDEX_ENDPOINT_KEY does not exist. It will provision a new $INDEX_ENDPOINT_KEY."
-    fi
-
-    WEB_ACCESS_APPLIANCE_ADDRESS_KEY="web-access-appliance-address"
-    WEB_ACCESS_APPLIANCE_ADDRESS_KEY_APP_CONFIG_STATUS=`az appconfig kv show --name $ACS_ADMIN_APP_CONFIG_NAME --key $WEB_ACCESS_APPLIANCE_ADDRESS_KEY --label $WEB_ACCESS_APPLIANCE_ADDRESS_KEY --query value --output tsv 2> /dev/null`
-    if [ "$WEB_ACCESS_APPLIANCE_ADDRESS_KEY_APP_CONFIG_STATUS" != "" ]; then
-        echo "INFO ::: web-access-appliance-address already exist in the App Config. Importing the existing web-access-appliance-address. "
-        COMMAND="terraform import -var-file=$NAC_TFVARS_FILE_NAME azurerm_app_configuration_key.$WEB_ACCESS_APPLIANCE_ADDRESS_KEY /subscriptions/$AZURE_SUBSCRIPTION_ID/resourceGroups/$ACS_RESOURCE_GROUP/providers/Microsoft.AppConfiguration/configurationStores/$ACS_ADMIN_APP_CONFIG_NAME/AppConfigurationKey/$WEB_ACCESS_APPLIANCE_ADDRESS_KEY/Label/$WEB_ACCESS_APPLIANCE_ADDRESS_KEY"
-        $COMMAND
-    else
-        echo "INFO ::: $WEB_ACCESS_APPLIANCE_ADDRESS_KEY does not exist. It will provision a new $WEB_ACCESS_APPLIANCE_ADDRESS_KEY."
-    fi
-}
-
-import_configuration
-
-echo $JSON_FILE_PATH
+echo "INFO ::: Scheduler Tracker json file path: $JSON_FILE_PATH"
 LATEST_TOC_HANDLE=""
 if [ -f "$JSON_FILE_PATH" ] ; then
 	TRACEPATH="${NMC_VOLUME_NAME}_${ANALYTICS_SERVICE}"
 	echo $TRACEPATH
 	TRACKER_JSON=$(cat $JSON_FILE_PATH)
-	echo "Tracker json" $TRACKER_JSON
+	# echo "Tracker json" $TRACKER_JSON
 	LATEST_TOC_HANDLE=$(echo $TRACKER_JSON | jq -r .INTEGRATIONS.\"$TRACEPATH\"._NAC_activity.latest_toc_handle_processed)
 	if [ "$LATEST_TOC_HANDLE" =  "null" ] ; then
 		LATEST_TOC_HANDLE="null"
 	fi
-	echo "LATEST_TOC_HANDLE: $LATEST_TOC_HANDLE"
+	echo "INFO ::: LATEST_TOC_HANDLE: $LATEST_TOC_HANDLE"
 else
 	LATEST_TOC_HANDLE=""
-	echo "ERROR:::Tracker JSON folder Not present"
+	echo "ERROR ::: Tracker JSON folder Not present"
 fi
 
 echo "INFO ::: LATEST_TOC_HANDLE" $LATEST_TOC_HANDLE
@@ -742,49 +892,48 @@ LATEST_TOC_HANDLE_PROCESSED=$LATEST_TOC_HANDLE
 
 FOLDER_PATH=`pwd`
 
-##appending latest_toc_handle_processed to TFVARS_FILE
+## appending latest_toc_handle_processed to TFVARS_FILE
 echo "PrevUniFSTOCHandle="\"$LATEST_TOC_HANDLE\" >>$FOLDER_PATH/$TFVARS_FILE
+
+################################ NAC Provisioning and Data Export #############################################################
 echo "INFO ::: NAC provisioning ::: BEGIN - Executing ::: Terraform Apply . . . . . . . . . . . "
 COMMAND="terraform apply -var-file=$NAC_TFVARS_FILE_NAME -auto-approve"
 $COMMAND
 
-####################### 2nd Run for Tracker_UI #########################
-if [ $? -eq 0 ]; then
+##################################### 2nd Run for Tracker_UI ########################################################
+DATA_IS_PRESENT=`az storage blob list --account-name $DESTINATION_STORAGE_ACCOUNT_NAME --container-name $DESTINATION_CONTAINER_NAME --account-key $DESTINATION_ACCOUNT_KEY`
+if [ "$DATA_IS_PRESENT" != "[]" ]; then
 	echo "INFO ::: NAC provisioning ::: FINISH ::: Terraform apply ::: SUCCESS"
-	echo "NAC_Activity : Export Completed. Indexing in Progress"
-	CURRENT_STATE="Export-completed-And-Indexing-In-progress"
-	# LATEST_TOC_HANDLE_PROCESSED=$(terraform output -raw latest_toc_handle_processed)
+	CURRENT_STATE="Export-completed-And-MetadataAssignment-In-progress"
     LATEST_TOC_HANDLE_PROCESSED=$UNIFS_TOC_HANDLE
 	echo "INFO ::: LATEST_TOC_HANDLE_PROCESSED for NAC Discovery is : $LATEST_TOC_HANDLE_PROCESSED"
-	generate_tracker_json $ACS_URL $ACS_REQUEST_URL $DEFAULT_URL $FREQUENCY $USER_SECRET $CREATED_BY $CREATED_ON $TRACKER_NMC_VOLUME_NAME $ANALYTICS_SERVICE $MOST_RECENT_RUN $CURRENT_STATE $LATEST_TOC_HANDLE_PROCESSED $NAC_SCHEDULER_NAME
     append_nmc_details_to_config_dat $UNIFS_TOC_HANDLE $SOURCE_CONTAINER $SOURCE_CONTAINER_SAS_URL $LATEST_TOC_HANDLE_PROCESSED
+	echo "INFO ::: NAC_Activity : Export Completed. Metadata Assignment in Progress"
+    
+    ################### Add Metadata to blobs and Update Tracker Json ###################
+    add_metadat_to_destination_blob $NMC_VOLUME_NAME
+    
 else
+    #########################################################################
+    ### Data Export to Destination Storage Account : FAILED
+    ### To rerun, we need to Start from NAC Deployment.
+    ### So, Setting the LATEST_TOC_HANDLE_PROCESSED as the latest_toc_handle_processed from Tracker JSON 
+    #########################################################################
+
 	echo "INFO ::: NAC provisioning ::: FINISH ::: Terraform apply ::: FAILED"
-	echo "NAC_Activity : Export Failed/Indexing Failed"
- 	CURRENT_STATE="Export-Failed-And-Indexing-Failed"
-	generate_tracker_json $ACS_URL $ACS_REQUEST_URL $DEFAULT_URL $FREQUENCY $USER_SECRET $CREATED_BY $CREATED_ON $TRACKER_NMC_VOLUME_NAME $ANALYTICS_SERVICE $MOST_RECENT_RUN $CURRENT_STATE $LATEST_TOC_HANDLE_PROCESSED $NAC_SCHEDULER_NAME
-	##exit 1
-fi
-
-echo "NAC_Activity : Indexing Completed"
-MOST_RECENT_RUN=$(date "+%Y:%m:%d-%H:%M:%S")
-CURRENT_STATE="Indexing-Completed"
-
-generate_tracker_json $ACS_URL $ACS_REQUEST_URL $DEFAULT_URL $FREQUENCY $USER_SECRET $CREATED_BY $CREATED_ON $TRACKER_NMC_VOLUME_NAME $ANALYTICS_SERVICE $MOST_RECENT_RUN $CURRENT_STATE $LATEST_TOC_HANDLE_PROCESSED $NAC_SCHEDULER_NAME
-append_nmc_details_to_config_dat $UNIFS_TOC_HANDLE $SOURCE_CONTAINER $SOURCE_CONTAINER_SAS_URL $LATEST_TOC_HANDLE_PROCESSED
-#################### 2nd Run for Tracker_UI Complete##########################
-
-
-if [ $? -eq 0 ]; then 
-    add_metadat_to_destination_blob $DESTINATION_CONTAINER_NAME $DESTINATION_CONTAINER_SAS_URL $NMC_VOLUME_NAME
-    echo "INFO ::: NAC provisioning ::: FINISH ::: Terraform apply ::: SUCCESS"
-else
-    echo "INFO ::: NAC provisioning ::: FINISH ::: Terraform apply ::: FAILED"
+ 	CURRENT_STATE="Export-Failed"
+    LATEST_TOC_HANDLE_FROM_TRACKER_JSON=""
+    read_latest_toc_handle_from_tracker_json
+    LATEST_TOC_HANDLE_PROCESSED=$LATEST_TOC_HANDLE_FROM_TRACKER_JSON
+   	generate_tracker_json $ACS_URL $ACS_REQUEST_URL $DEFAULT_URL $FREQUENCY $USER_SECRET $CREATED_BY $CREATED_ON $TRACKER_NMC_VOLUME_NAME $ANALYTICS_SERVICE $MOST_RECENT_RUN $CURRENT_STATE $LATEST_TOC_HANDLE_PROCESSED $NAC_SCHEDULER_NAME
+	echo "INFO ::: NAC_Activity : Export Failed."
+    echo "Enabling the crontab as the code execution FAILS"
+    enable_crontab
     exit 1
 fi
 
-##################################### END NAC Provisioning ###################################################################
-##################################### Blob Store Cleanup START #####################################################################
+##################################### END NAC Provisioning and Data Export ###################################################################
+##################################### Indexing START ###############################################################
 ACS_SERVICE_NAME=`az appconfig kv show --name $ACS_ADMIN_APP_CONFIG_NAME --key acs-service-name --label acs-service-name --query value --output tsv 2> /dev/null`
 echo "INFO ::: ACS Service Name : $ACS_SERVICE_NAME"
 
@@ -792,9 +941,13 @@ ACS_API_KEY=`az appconfig kv show --name $ACS_ADMIN_APP_CONFIG_NAME --key acs-ap
 echo "INFO ::: ACS Service API Key : $ACS_API_KEY"
 
 run_cognitive_search_indexer $ACS_SERVICE_NAME $ACS_API_KEY
+##################################### Indexing COMPLETE ###############################################################
 
-destination_blob_cleanup $DESTINATION_CONTAINER_NAME $DESTINATION_CONTAINER_SAS_URL $ACS_SERVICE_NAME $ACS_API_KEY $USE_PRIVATE_IP
+##################################### Blob Store Cleanup START ###############################################################
 
+destination_blob_cleanup $ACS_SERVICE_NAME $ACS_API_KEY $USE_PRIVATE_IP $EDGEAPPLIANCE_RESOURCE_GROUP
+echo "Enabling the crontab as the code executed SUCCESSFULLY"
+enable_crontab
 cd ..
 ##################################### Blob Store Cleanup END #####################################################################
 
