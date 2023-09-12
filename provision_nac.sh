@@ -251,21 +251,21 @@ append_nmc_details_to_config_dat(){
 	CONFIG_DAT_FILE_NAME="config.dat"
     NAC_RESOURCE_GROUP_NAME="nac-resource-group-$RND"
     ### Be careful while modifieng the values
-    sed -i "s|\<Name\>:.*||g" config.dat
-    echo "Name: "$NAC_RESOURCE_GROUP_NAME >> config.dat
-    sed -i "s|\<UniFSTOCHandle\>:.*||g" config.dat
-    echo "UniFSTOCHandle: "$UNIFS_TOC_HANDLE >> config.dat
-    sed -i "s/SourceContainer:.*/SourceContainer: $SOURCE_CONTAINER/g" config.dat
-    sed -i "s|SourceContainerSASURL.*||g" config.dat
-    echo "SourceContainerSASURL: "$SOURCE_CONTAINER_SAS_URL >> config.dat
-    sed -i "s/DestinationContainer:.*/DestinationContainer: $DESTINATION_CONTAINER_NAME/g" config.dat
-    sed -i "s|DestinationContainerSASURL.*||g" config.dat
-    echo "DestinationContainerSASURL: "$DESTINATION_CONTAINER_SAS_URL >> config.dat
-    sed -i "s|VolumeKeySASURL.*||g" config.dat
-    echo "VolumeKeySASURL: "$VOLUME_KEY_BLOB_SAS_URL >> config.dat
-    sed -i "s|\<PrevUniFSTOCHandle\>:.*||g" config.dat
-    echo "PrevUniFSTOCHandle: "$PREV_UNIFS_TOC_HANDLE >> config.dat
-    sed -i '/^$/d' config.dat
+    sed -i "s|\<Name\>:.*||g" "$CONFIG_DAT_FILE_NAME" 2> /dev/null
+    echo "Name: "$NAC_RESOURCE_GROUP_NAME >> "$CONFIG_DAT_FILE_NAME"
+    sed -i "s|\<UniFSTOCHandle\>:.*||g" "$CONFIG_DAT_FILE_NAME" 2> /dev/null
+    echo "UniFSTOCHandle: "$UNIFS_TOC_HANDLE >> "$CONFIG_DAT_FILE_NAME"
+    sed -i "s/SourceContainer:.*/SourceContainer: $SOURCE_CONTAINER/g" "$CONFIG_DAT_FILE_NAME" 2> /dev/null
+    sed -i "s|SourceContainerSASURL.*||g" "$CONFIG_DAT_FILE_NAME" 2> /dev/null
+    echo "SourceContainerSASURL: "$SOURCE_CONTAINER_SAS_URL >> "$CONFIG_DAT_FILE_NAME"
+    sed -i "s/DestinationContainer:.*/DestinationContainer: $DESTINATION_CONTAINER_NAME/g" "$CONFIG_DAT_FILE_NAME" 2> /dev/null
+    sed -i "s|DestinationContainerSASURL.*||g" "$CONFIG_DAT_FILE_NAME" 2> /dev/null
+    echo "DestinationContainerSASURL: "$DESTINATION_CONTAINER_SAS_URL >> "$CONFIG_DAT_FILE_NAME"
+    sed -i "s|VolumeKeySASURL.*||g" "$CONFIG_DAT_FILE_NAME" 2> /dev/null
+    echo "VolumeKeySASURL: "$VOLUME_KEY_BLOB_SAS_URL >> "$CONFIG_DAT_FILE_NAME"
+    sed -i "s|\<PrevUniFSTOCHandle\>:.*||g" "$CONFIG_DAT_FILE_NAME" 2> /dev/null
+    echo "PrevUniFSTOCHandle: "$PREV_UNIFS_TOC_HANDLE >> "$CONFIG_DAT_FILE_NAME"
+    sed -i '/^$/d' "$CONFIG_DAT_FILE_NAME" 2> /dev/null
 }
 
 nmc_api_call(){
@@ -875,6 +875,7 @@ sudo rm -rf "$NAC_TFVARS_FILE_NAME"
 echo "acs_resource_group="\"$ACS_RESOURCE_GROUP\" >>$NAC_TFVARS_FILE_NAME
 echo "acs_admin_app_config_name="\"$ACS_ADMIN_APP_CONFIG_NAME\" >>$NAC_TFVARS_FILE_NAME
 echo "acs_nmc_volume_name="\"$NMC_VOLUME_NAME\" >>$NAC_TFVARS_FILE_NAME
+echo "nac_resource_group_name"\"$NAC_RESOURCE_GROUP_NAME\" >>$NAC_TFVARS_FILE_NAME
 if [[ "$USE_PRIVATE_IP" == "Y" ]]; then
 	echo "networking_resource_group="\"$NETWORKING_RESOURCE_GROUP\" >>$NAC_TFVARS_FILE_NAME
     echo "user_vnet_name="\"$USER_VNET_NAME\" >>$NAC_TFVARS_FILE_NAME
