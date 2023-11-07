@@ -120,7 +120,7 @@ When the script has completed, you will see a URL.
 For example, a command with all five arguments would look like this:
 
 ```sh
-./NAC_Scheduler.sh Projects acs 300 my-secret-vault nacvariables.txt
+./NAC_Scheduler.sh Projects acs 350 my-secret-vault nacvariables.txt
 ```
 # Services Available
 
