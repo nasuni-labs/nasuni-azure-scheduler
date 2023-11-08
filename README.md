@@ -37,34 +37,79 @@ If you have escrowed your key with Nasuni and do not have it in your possession,
 
 ## Quick Start
 
-1. Download the script NAC Scheduler from this repository, or clone this repository.
+1. On your linux terminal, Sign in to Azure CLI using a service principal
 
-2. Make the NAC Scheduler script executable on your computer (i.e. Linux Jump box). For example, you can run this command:
-```sh 
-chmod 755 NAC_Scheduler.sh
-```
+2. Download the script NAC Scheduler from this repository, or clone this repository.
 
-3. Run the NAC Scheduler script with at least four arguments:
+3. Make the NAC Scheduler script executable on your computer (i.e. Linux Jump box). 
+    For example, you can run this command:
+    ```sh 
+        chmod 755 NAC_Scheduler.sh
+    ```
+
+4. Run the NAC Scheduler script with at least four arguments:
     * The name of the volume.
     * The name of the service to be integrated with (i.e. acs).
     * The frequency of the indexing (in minutes).
     * The name of the user input Vault used.
+    * (Optional) The name of the KeyValue Pairs Text file, that contains the overridable static parameters for NAC. If you dont pass this parameters, it will take default values for NAC Execution.  
     
-For example, a command like this:
+    For example, a command like this: (Here Volume name is Projects_volume_1)
+    ```sh 
+        ./NAC_Scheduler.sh Projects_volume_1 acs 300 my-secret-vault
+    ```
 
-```sh 
-./NAC_Scheduler.sh Projects acs 200 user_inut_vault
-```
-
-When the script has completed, you will see a URL.
+    When the script has completed, you will see a URL.
 
 ## Detailed Instructions
 
-1. Download the NAC Scheduler script from this repository, or clone this repository.
+1. #### Sign in to Azure CLI using a service principal
+- Verify your logged in user with below command: 
+    ```sh 
+    az account show
+    ``` 
+    - Confirm that the output shows correct Service Principal App ID under section “user >> name” 
+        Example: 	
+        ```sh 
+            “user” : {
+                    “name” : “<<Your Service Principal Application ID>>”
+                    . . . 
+            }
+        ```
+    - Confirm that the output has “type” : “servicePrincipal” under section “user”
+        Example: 
+        ```sh
+            “user” : {
+                “name” : “<<Your Service Principal Application ID>>”
+                “type” : “servicePrincipal”
+            }
+        ```
+    - Verify the Microsoft Entra tenant ID.
+        Example: 
+        ```sh
+            “tenantId” : “<<Your Microsoft Entra Tenant ID>>”
+        ```
+- Export the useful environment variables using below Syntax:
+    ```sh
+        export ARM_CLIENT_ID="<<Service Principal Application ID>>"  
+        export ARM_CLIENT_SECRET="<<Service Principal Password>>" 
+        export ARM_TENANT_ID="<<Microsoft Entra Tenant ID>>" 
+        export ARM_SUBSCRIPTION_ID="<<Azure Subscription ID>>"
+    ```
+- Login to Azure from Azure CLI using Azure ServicePrincipal. You can use the below Syntax:
+    ```sh
+        az login --service-principal --tenant <Microsoft_Entra_Tenant_ID> --username <Service_Principal_Application_ID> --password <Service_Principal_password>
+    ```
 
-2. Make the NAC Scheduler script executable on your local computer.
-
-3. If you have not created a KeyVault in the [Azure KeyVault], create one now using one of two methods:
+2. #### Download the NAC Scheduler script from this repository, or clone this repository.
+    ```sh
+        Example:  
+            git clone https://github.com/psahuNasuni/nasuni-nac-scheduler.git -b nac_v1.0.7.dev6
+    ```
+3. #### Make the NAC Scheduler script executable on your local computer.
+    Refer the step 3 of "**Quick Start**" 
+4. #### Create secret Vault 
+    If you have not created a KeyVault in the [Azure KeyVault], create one now using one of two methods:
 
     **Create via Azure Portal**
     
@@ -77,26 +122,28 @@ When the script has completed, you will see a URL.
         - Provide the other options as per your need. 
     click "**Create**" button.
     3. Create secrets or key value pairs with the following:
+
+        Example: Vault Name = my-secret-vault
     
-    |Sl No|Secret Key|Secret Value (example)|    Notes    .|
-    |---|-------|-----------|--------------------|
-    |1|nmc-api-endpoint|10.1.1.2|Should be accessible to the resources created by this script.|
-    |2|nmc-api-username|apiuser|Make sure that this API user has the following Permissions: "Enable NMC API Access" and "Manage all aspects of Volumes". For details, see “Adding Permission Groups” on page 461 of the [Nasuni Management Console Guide](https://b.link/Nasuni_NMC_Guide).|
-    |3|nmc-api-password|notarealpassword|Password for this user.|
-    |4|product-key|XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX|Your product key can be generated on the [Nasuni Cloud Services page] in your Nasuni dashboard.|
-    |5|web-access-appliance-address|10.1.1.1|Should be publicly accessible and include shares for the volume being searched.|
-    |6|cred-vault|nac_user_cred_vault|Provide the User Credential Vault name. This is the Azure Key-Vault containing user name and password,   where; the user name must have owner access|
-    |7|volume-key-container-url|https://<<VolumeStorageContainer>>.blob.core.windows.net/key/<<XXXXX>>.pgp|This is the parameter value created when you upload your pgp key file to the <<VolumeStorageContainer>> container. After uploading, follow below steps to get the volume-key-container-url: - Login to the Azure Portal and navigate to Microsoft_Azure_Storage. - Identify the VolumeKey Storage account - Navigate to Containers   - Click on the container name    - Click on the pgp file name     - Copy the URL under Properties|
-    |8|pem-key-path|/home/johndoe/.ssh/mypemkey.pem|A pem key which is also stored as one of the [key pairs] in your Azure account. (NB: case matters. Make sure that the pem key in the pem-key-path has the same capitalization as the corresponding key in Azure)|
-    |9|nac-scheduler-name|NAC_Scheduler_VM|(Optional) The name of the NAC Scheduler. If this variable is not set, the name defaults to "NAC_Scheduler"|
-    |10|github-organization|nasuni-labs|(Optional) If you have forked this repository or are using a forked version of this repository, add that organization name here. All calls to github repositories will look within this organization|
-    |11|azure-location|canadacentral|The Azure Region/Location, where you want to execute NAC|
-    |12|azure-subscription|XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX|The Subscription ID, of your Azure Account|
-    |13|use_private_ip|Y|(Optinal)If you want to provision the infrastructure in a Private subnet, add the instruction in with use_private_ip. All resources will be provisioned in the provided Private , if the value passed as "Y". If this variable is not provided, the execution will happen in the Default VPC's default Public Subnet.|
-    |14|networking-resource-group|network-rg-XXXXX|This is the Azure Resource Group, where all network related resources will be provisioned.|
-    |15|user-vnet-name|myuser_vnet|Provide the Specified vnet name. This vNet should reside in the networking resource group|
-    |16|edgeappliance-resource-group|edgeappliance-rg-XXXXX|This is the Azure Resource Group, where the edge Appliance and source storage account resides. You can get this Resource Group by following steps: → Login to NMC → navigate to File Browser → select a volume → copy Account → search for the copied account in Azure portal to get the storage account → find the Resource Group  → This should be the edgeappliance-resource-group|
-    |17|sp-secret|XXXXXXXXXXXXXXXXX|Provide the value of the Service Principal Id. All resources will be provisioned with Service Principal user. Follow the below stps to get the sp-secret from Azure Portal: - Login to the Azure Portal. Navigate to **Microsoft Entra ID** Click on **App registrations** from left menu, Search your SP (i.e. pubnactest-sp), and Click on the **Certificates & secrets**. Value of sp-secret is the hidden Value in the table. If, you dont remember the avlue of the SP Secret, you can create one by **+ create**|
+        |Sl No|Secret Key| Value (example)    | Notes   .    |
+        |-----|----------|--------| ----------------    |
+        |1|nmc-api-endpoint|10.1.1.2|Should be accessible to the resources created by this script.|
+        |2|nmc-api-username|apiuser|Make sure that this API user has the following Permissions: "Enable NMC API Access" and "Manage all aspects of Volumes".  For details, see “Adding Permission Groups” on page 461 of the [Nasuni Management Console Guide](https://b.link/Nasuni_NMC_Guide).|
+        |3|nmc-api-password|notarealpassword|Password for this user.|
+        |4|product-key|XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX|Your product key can be generated on the [Nasuni Cloud Services page] in your Nasuni dashboard.|
+        |5|web-access-appliance-address|10.1.1.1|Should be publicly accessible and include shares for the volume being searched.|
+        |6|cred-vault|nac_user_cred_vault|Provide the User Credential Vault name. This is the Azure Key-Vault containing user name and password,   where; the user name must have owner access|
+        |7|volume-key-container-url|    https://VolumeStorageContainer. blob.core.windows.net/key/XXXXX.pgp    |This is the parameter value created when you upload your pgp key file to the VolumeStorageContainer container. After uploading, follow below steps to get the volume-key-container-url: - Login to the Azure Portal and navigate to Microsoft_Azure_Storage. - Identify the VolumeKey Storage account - Navigate to Containers   - Click on the container name    - Click on the pgp file name     - Copy the URL under Properties|
+        |8|pem-key-path|/home/my-folder/.ssh/mypemkey.pem|A pem key which is also stored as one of the [key pairs] in your Azure account. (NB: case matters. Make sure that the pem key in the pem-key-path has the same capitalization as the corresponding key in Azure)|
+        |9|nac-scheduler-name|NAC_Scheduler_VM|(Optional) The name of the NAC Scheduler. If this variable is not set, the name defaults to "NAC_Scheduler"|
+        |10|github-organization|nasuni-labs|(Optional) If you have forked this repository or are using a forked version of this repository, add that organization name here. All calls to github repositories will look within this organization|
+        |11|azure-location|canadacentral|The Azure Region/Location, where you want to execute NAC|
+        |12|azure-subscription|XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX|The Subscription ID, of your Azure Account|
+        |13|use_private_ip|Y|(Optinal)If you want to provision the infrastructure in a Private subnet, add the instruction in with use_private_ip. All resources will be provisioned in the provided Private, if the value passed as "Y". If this variable is not provided, the execution will happen in the Default VPC's default Public Subnet.|
+        |14|networking-resource-group|network-rg-XXXXX|This is the Azure Resource Group, where all network related resources will be provisioned.|
+        |15|user-vnet-name|myuser_vnet|Provide the Specified vnet name. This vNet should reside in the networking resource group|
+        |16|edgeappliance-resource-group|edgeappliance-rg-XXXXX|This is the Azure Resource Group, where the edge Appliance and source storage account resides. You can get this Resource Group by following steps: → Login to NMC → navigate to File Browser → select a volume → copy Account → search for the copied account in Azure portal to get the storage account → find the Resource Group  → This should be the edgeappliance-resource-group|
+        |17|sp-secret|XXXXXXXXXXXXXXXXX|Provide the value of the Service Principal Id. All resources will be provisioned with Service Principal user. Follow the below stps to get the sp-secret from Azure Portal: - Login to the Azure Portal. Navigate to **Microsoft Entra ID** Click on **App registrations** from left menu, Search your SP (Example: pubnactest-sp), and Click on the **Certificates & secrets**. Value of sp-secret is the hidden Value in the table. If, you dont remember the avlue of the SP Secret, you can create one by **+ create**|
     4. After you have entered all the key value pairs, click **Next**.
     5. Choose a name for your key. Remember this name for when you run the initial script.  
 
@@ -106,22 +153,41 @@ When the script has completed, you will see a URL.
     2. Do not use quotes for either the key or the value. For example: azure-location="canadacentral"
     3. Save this as a text file (for example, mysecret.txt) in the same folder as the NAC_Scheduler.sh script.
 
-4. If you need to override any of the NAC parameters (as described in the Appendix: Automating Analytics Connector section of the [NAC Technical Documentation]), you can create a NAC variables file that lists the parameters you would like to change.
+5. #### Provide NAC Parameters (Optional) 
+- If you need to override any of the NAC parameters (as described in the Appendix: Automating Analytics Connector section of the [NAC Technical Documentation]), you can create a NAC variables file that lists the parameters you would like to change.
 
-5. Save this list of variables as a text file (for example, nacvariables.txt) in the same folder as the NAC_Scheduler.sh script.
+- Save this list of variables as a text file (for example, nacvariables.txt) in the same folder as the NAC_Scheduler.sh script.
 
-6. Run the script with three to five arguments, depending on whether or not you have created a local secrets file or a NAC variables file. The order of arguments should be as follows:
-    * The name of the volume.
-    * The name of the service to be integrated with (see Services Available below).
-    * The frequency of the indexing (in minutes).
-    * The path to the secrets file created in Step 3 **Create via Azure Portal**, or the name of the User Input Vault generated in Step 3 **Create a local file**.
-    * (OPTIONAL) The path to the NAC variables file.
+6. #### Execute the script NAC_Scheduler.sh
+    - ##### Scheduling NAC for Single Volume
+        - Run the script with three to five arguments, depending on whether or not you have created a local secrets file or a NAC variables file. The order of arguments should be as follows:
+            * The name of the volume.
+            * The name of the service to be integrated with (see Services Available below).
+            * The frequency of the indexing (in minutes).
+            * The path to the secrets file created in Step 3 **Create via Azure Portal**, or the name of the User Input Vault generated in Step 3 **Create a local file**.
+            * (OPTIONAL) The path to the NAC variables file.
 
-For example, a command with all five arguments would look like this:
+        For example, a command to Execute the script NAC_Scheduler.sh with Four arguments would look like this:
+        ```sh
+            ./NAC_Scheduler.sh Projects_volume_1 acs 300 my-secret-vault
+        ```
 
-```sh
-./NAC_Scheduler.sh Projects acs 350 my-secret-vault nacvariables.txt
-```
+        For example, a command with all five arguments would look like this:
+        ```sh
+            ./NAC_Scheduler.sh Projects_volume_1 acs 300 my-secret-vault nacvariables.txt
+        ```
+
+   - ##### Scheduling NAC for Multiple Volume(s)
+        - If, you want to schedule NAC for multiple volumes;
+            - You need to create a secomd_volume specific secret Vault by following steps given in section **Create secret Vault**.
+            - You need to execute the NAC_Scheduler.sh script as mentioned in above section **Scheduling NAC for Single Volume** from JumpBox Computer with the second_volume as first argument, and second_volume specific vault as Fourth argument.
+                For example, a command like this:
+                ```sh 
+                    ./NAC_Scheduler.sh Projects_volume_2 acs 400 my-secret-vault_2
+                    # Here, Volume name is Projects_volume_2,
+                    # and Vault name is my-secret-vault_2
+                ```
+                
 # Services Available
 
 The NAC Scheduler currently supports the following services:
